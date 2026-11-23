@@ -6,7 +6,7 @@
 
 // TODO (once): your Cloud project ID, from the Code Editor's project picker.
 // Then create the folder in the Assets tab: NEW > Folder > "forestwatch".
-exports.ASSET_ROOT = 'projects/YOUR-GEE-PROJECT-ID/assets/forestwatch';
+exports.ASSET_ROOT = 'projects/forestwatchng/assets/forestwatch';
 
 // Study sites. 'name' is the text searched for in the WDPA protected-areas database.
 exports.SITES = {
