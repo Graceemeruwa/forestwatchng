@@ -1,0 +1,21 @@
+/**** ForestWatch NG - study-site helpers ****
+ * var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+
+// Search WDPA for Nigerian protected areas whose name contains the text.
+exports.searchWDPA = function(nameFragment) {
+  return ee.FeatureCollection('WCMC/WDPA/current/polygons')
+    .filter(ee.Filter.eq('ISO3', 'NGA'))
+    .filter(ee.Filter.stringContains('NAME', nameFragment));
+};
+
+// Boundary saved by S3_boundaries (or uploaded by hand) for a site key.
+exports.boundary = function(siteKey) {
+  return ee.FeatureCollection(cfg.ASSET_ROOT + '/boundary_' + siteKey);
+};
+
+// Area of interest: the reserve boundary plus the buffer.
+exports.aoi = function(siteKey) {
+  return exports.boundary(siteKey).geometry().buffer(cfg.BUFFER_M, 100);
+};

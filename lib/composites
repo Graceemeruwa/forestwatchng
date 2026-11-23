@@ -1,0 +1,65 @@
+/**** ForestWatch NG - satellite composites ****
+ * var comp = require('users/forestwatchng/forestwatchng:lib/composites');
+ *
+ * s2(aoi, start, end): cloud-masked Sentinel-2 median composite
+ *   bands: B2 B3 B4 B8 B11 B12 (reflectance 0-1), NDVI, NBR, NDMI, n_clear
+ * s1(aoi, start, end): Sentinel-1 median composite (dB)
+ *   bands: VV, VH, VH_VV, n_s1
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+
+exports.s2 = function(aoi, start, end) {
+  var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+  var col = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(aoi)
+    .filterDate(start, end)
+    .linkCollection(csPlus, ['cs_cdf'])
+    .map(function(img) {
+      return img.updateMask(img.select('cs_cdf').gte(cfg.CS_THRESHOLD));
+    })
+    .select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']);
+
+  // Sentinel-2 surface reflectance is stored as integers: divide by 10,000.
+  var med = col.median().divide(10000);
+  var ndvi = med.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  var nbr  = med.normalizedDifference(['B8', 'B12']).rename('NBR');
+  var ndmi = med.normalizedDifference(['B8', 'B11']).rename('NDMI');
+  // Number of clear observations per pixel: a quality check for each window.
+  var nClear = col.select('B4').count().rename('n_clear');
+
+  return med.addBands([ndvi, nbr, ndmi]).addBands(nClear).toFloat().clip(aoi);
+};
+
+exports.s1 = function(aoi, start, end) {
+  var col = ee.ImageCollection('COPERNICUS/S1_GRD')
+    .filterBounds(aoi)
+    .filterDate(start, end)
+    .filter(ee.Filter.eq('instrumentMode', 'IW'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+    .select(['VV', 'VH']);
+
+  // Median over the window, then a light spatial filter to reduce speckle.
+  var med = col.median().focalMedian(30, 'circle', 'meters');
+  // Values are in dB, so the VH/VV ratio is a difference.
+  var ratio = med.select('VH').subtract(med.select('VV')).rename('VH_VV');
+  var nObs = col.select('VV').count().rename('n_s1');
+
+  return med.addBands(ratio).addBands(nObs).toFloat().clip(aoi);
+};
+
+// Both sensors stacked, with a prefix on every band name (e.g. 'base_NDVI').
+exports.stack = function(aoi, start, end, prefix) {
+  var img = exports.s2(aoi, start, end).addBands(exports.s1(aoi, start, end));
+  return img.regexpRename('^(.*)$', prefix + '_$1');
+};
+
+// Window dictionary for the last N days before a fixed end date.
+exports.last90Window = function() {
+  var end = ee.Date(cfg.LAST90_END);
+  return {
+    start: end.advance(-cfg.LAST90_DAYS, 'day'),
+    end: end,
+    label: 'last90_to_' + cfg.LAST90_END.replace(/-/g, '')
+  };
+};

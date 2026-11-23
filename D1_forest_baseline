@@ -1,0 +1,57 @@
+/**** D1 - Forest baseline (owner: Member 2) ****
+ * Forest at the start of 2025 = Hansen tree cover 2000 >= 30%,
+ * minus all Hansen loss from 2001 to 2024.
+ * Only these pixels are monitored for new loss.
+ *
+ * Needs: S3 boundaries saved as assets.
+ * Output: <ASSET_ROOT>/forest2025_<site> (1 = forest, masked elsewhere)
+ * Also prints forest area and a chart of yearly loss 2001-2025 (context for the pitch).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+var SITE = 'omo';   // change to 'gambari' and rerun
+
+var aoi = sites.aoi(SITE);
+var boundary = sites.boundary(SITE);
+var gfc = ee.Image('UMD/hansen/global_forest_change_2025_v1_13');
+
+var forest2000 = gfc.select('treecover2000').gte(cfg.TREE_COVER_MIN);
+var lossyear = gfc.select('lossyear');   // 0 = no loss, 1-25 = 2001-2025
+var lostBefore = lossyear.gt(0).and(lossyear.lte(cfg.BASELINE_LAST_LOSS_YEAR));
+var forest2025 = forest2000.and(lostBefore.not()).selfMask().rename('forest').toByte();
+
+// Area summaries (hectares), inside the reserve boundary only.
+var haImg = ee.Image.pixelArea().divide(10000);
+var forestHa = haImg.updateMask(forest2025).reduceRegion({
+  reducer: ee.Reducer.sum(), geometry: boundary.geometry(), scale: 30, maxPixels: 1e10
+});
+print(SITE + ': forest at start of 2025 inside reserve (ha)', forestHa.get('area'));
+
+// Yearly Hansen loss inside the reserve, 2001-2025.
+var lossByYear = haImg.addBands(lossyear).updateMask(lossyear.gt(0)).reduceRegion({
+  reducer: ee.Reducer.sum().group({groupField: 1, groupName: 'year'}),
+  geometry: boundary.geometry(), scale: 30, maxPixels: 1e10
+});
+var rows = ee.List(lossByYear.get('groups')).map(function(g) {
+  g = ee.Dictionary(g);
+  return ee.Feature(null, {year: ee.Number(g.get('year')).add(2000), loss_ha: g.get('sum')});
+});
+print(ui.Chart.feature.byFeature(ee.FeatureCollection(rows), 'year', 'loss_ha')
+  .setChartType('ColumnChart')
+  .setOptions({title: SITE + ': Hansen tree-cover loss per year (ha)', legend: {position: 'none'}}));
+
+Map.centerObject(boundary, 11);
+Map.addLayer(forest2025.clip(aoi), {palette: ['1b7837']}, 'Forest at start of 2025');
+Map.addLayer(lossyear.updateMask(lossyear.gt(0)).clip(aoi),
+  {min: 1, max: 25, palette: ['ffff00', 'ff8800', 'ff0000']}, 'Hansen loss year (2001-2025)', false);
+Map.addLayer(ee.Image().paint(boundary, 0, 2), {palette: ['ffffff']}, 'Reserve boundary');
+
+Export.image.toAsset({
+  image: forest2025.clip(aoi),
+  description: 'D1_forest2025_' + SITE,
+  assetId: cfg.ASSET_ROOT + '/forest2025_' + SITE,
+  region: aoi,
+  scale: 30,
+  maxPixels: 1e10
+});

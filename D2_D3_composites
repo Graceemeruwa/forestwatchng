@@ -1,0 +1,45 @@
+/**** D2 + D3 - Sentinel-2 and Sentinel-1 composites (owner: Member 2) ****
+ * Builds cloud-masked composites for three windows:
+ *   baseline  : dry season 2024/25 (Nov-Mar)
+ *   recent    : dry season 2025/26 (Nov-Mar)
+ *   last 90   : the 90 days before cfg.LAST90_END (early-warning window)
+ *
+ * Needs: S3 boundaries saved as assets.
+ * Output: <ASSET_ROOT>/comp_<site>_<window label>, 10 m, bands:
+ *   S2: B2 B3 B4 B8 B11 B12 NDVI NBR NDMI n_clear
+ *   S1: VV VH VH_VV n_s1
+ * Check in the Console: share of pixels with at least one clear Sentinel-2 view.
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+var comp = require('users/forestwatchng/forestwatchng:lib/composites');
+
+var SITE = 'omo';   // change to 'gambari' and rerun
+
+var aoi = sites.aoi(SITE);
+var windows = [cfg.WINDOWS.baseline, cfg.WINDOWS.recent, comp.last90Window()];
+
+Map.centerObject(aoi, 11);
+
+windows.forEach(function(w) {
+  var img = comp.s2(aoi, w.start, w.end).addBands(comp.s1(aoi, w.start, w.end));
+
+  // Quality check: how much of the area has a clear optical view?
+  var clearShare = img.select('n_clear').gte(1).unmask(0)
+    .reduceRegion({reducer: ee.Reducer.mean(), geometry: aoi, scale: 100, maxPixels: 1e10});
+  print(SITE + ' ' + w.label + ': share of area with >=1 clear S2 view', clearShare.get('n_clear'));
+  print(SITE + ' ' + w.label + ': median S1 scenes per pixel',
+    img.select('n_s1').reduceRegion({reducer: ee.Reducer.median(), geometry: aoi, scale: 100, maxPixels: 1e10}).get('n_s1'));
+
+  Map.addLayer(img, {bands: ['B11', 'B8', 'B4'], min: 0.02, max: 0.35}, w.label + ' S2 (SWIR-NIR-red)', false);
+  Map.addLayer(img, {bands: ['VV', 'VH', 'VH_VV'], min: [-18, -25, -10], max: [0, -10, 0]}, w.label + ' S1', false);
+
+  Export.image.toAsset({
+    image: img,
+    description: 'D2D3_comp_' + SITE + '_' + w.label,
+    assetId: cfg.ASSET_ROOT + '/comp_' + SITE + '_' + w.label,
+    region: aoi,
+    scale: cfg.SCALE,
+    maxPixels: 1e10
+  });
+});

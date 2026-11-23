@@ -1,0 +1,41 @@
+/**** ForestWatch NG - shared settings ****
+ * Every script loads this file. Change settings here only.
+ * Load with:
+ *   var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+ */
+
+// TODO (once): your Cloud project ID, from the Code Editor's project picker.
+// Then create the folder in the Assets tab: NEW > Folder > "forestwatch".
+exports.ASSET_ROOT = 'projects/YOUR-GEE-PROJECT-ID/assets/forestwatch';
+
+// Study sites. 'name' is the text searched for in the WDPA protected-areas database.
+exports.SITES = {
+  omo:     {name: 'Omo',     role: 'development'},
+  gambari: {name: 'Gambari', role: 'independent test'}
+};
+
+// Buffer around each reserve, in metres. Encroachment starts at the edges.
+exports.BUFFER_M = 5000;
+
+// Forest definition: Hansen tree cover in 2000 of at least this percentage.
+exports.TREE_COVER_MIN = 30;
+
+// Last Hansen loss year counted before monitoring starts (24 = 2024).
+exports.BASELINE_LAST_LOSS_YEAR = 24;
+
+// Time windows. End dates are exclusive (filterDate convention).
+exports.WINDOWS = {
+  baseline: {start: '2024-11-01', end: '2025-04-01', label: 'dry_2024_25'},
+  recent:   {start: '2025-11-01', end: '2026-04-01', label: 'dry_2025_26'}
+};
+
+// The last-90-days window is computed from a fixed end date so that results
+// can be reproduced. Update this date when you rerun the early-warning check.
+exports.LAST90_END = '2026-11-23';
+exports.LAST90_DAYS = 90;
+
+// Cloud Score+ threshold: keep Sentinel-2 pixels with cs_cdf at or above this.
+exports.CS_THRESHOLD = 0.6;
+
+// Output pixel size, in metres.
+exports.SCALE = 10;
