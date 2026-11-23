@@ -18,8 +18,8 @@ var sites = require('users/forestwatchng/forestwatchng:lib/sites');
 
 // Position of the correct match in each list (0 = first). Leave null to skip export.
 var CHOSEN = {
-  omo: null,
-  gambari: null
+  omo: 0,        // 132,475 ha mapped (reported ~130,500 ha)
+  gambari: 0    // 17,248 ha mapped
 };
 
 Object.keys(cfg.SITES).forEach(function(key) {
