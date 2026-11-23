@@ -1,0 +1,41 @@
+/**** S3 - Reserve boundaries (owner: Abiodun) ****
+ * Goal: save one clean boundary per reserve as an asset:
+ *   <ASSET_ROOT>/boundary_omo  and  <ASSET_ROOT>/boundary_gambari
+ *
+ * Steps
+ * 1. Run. The Console lists WDPA matches for each reserve; they are drawn on the map.
+ * 2. Check each match against a published map of the reserve.
+ * 3. If a match is right, set its WDPA ID (WDPAID) below and run the export task.
+ * 4. If there is no match, or it is wrong, upload your own boundary instead:
+ *    Assets > NEW > Shape files (.shp .shx .dbf .prj, zipped or together)
+ *    and save it with the same asset name (boundary_omo / boundary_gambari).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+// Fill these in after checking the Console output (leave null to skip export).
+var CHOSEN_WDPAID = {
+  omo: null,
+  gambari: null
+};
+
+Object.keys(cfg.SITES).forEach(function(key) {
+  var matches = sites.searchWDPA(cfg.SITES[key].name);
+  print(key + ': WDPA matches', matches.select(['WDPAID', 'NAME', 'DESIG_ENG', 'REP_AREA', 'STATUS_YR']));
+  Map.addLayer(matches, {color: key === 'omo' ? 'yellow' : 'cyan'}, key + ' (WDPA matches)');
+
+  var id = CHOSEN_WDPAID[key];
+  if (id !== null) {
+    var chosen = matches.filter(ee.Filter.eq('WDPAID', id))
+      .map(function(f) { return f.set('site', key); });
+    print(key + ': chosen boundary area (ha)',
+      chosen.geometry().area(100).divide(10000));
+    Export.table.toAsset({
+      collection: chosen,
+      description: 'S3_boundary_' + key,
+      assetId: cfg.ASSET_ROOT + '/boundary_' + key
+    });
+  }
+});
+
+Map.setCenter(3.9, 7.0, 8);
