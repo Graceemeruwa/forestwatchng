@@ -3,10 +3,11 @@
  *   <ASSET_ROOT>/boundary_omo  and  <ASSET_ROOT>/boundary_gambari
  *
  * Steps
- * 1. Run. The Console lists each WDPA match as
- *    [WDPAID, NAME, designation, reported area km2, mapped area ha]; matches are drawn on the map.
- * 2. Check each match against a published map of the reserve.
- * 3. If a match is right, set its WDPA ID (WDPAID) below and run the export task.
+ * 1. Run. For each reserve the Console shows how many WDPA matches were found,
+ *    then each match's full attributes and its mapped area (ha). Matches are drawn on the map.
+ * 2. Check each match against a published map of the reserve (Omo is about 130,000 ha).
+ * 3. If a match is right, set its position in the list (0 = first) in CHOSEN below,
+ *    run again, and start the export task in the Tasks tab.
  * 4. If there is no match, or a better (official) boundary is available, upload it instead:
  *    Assets > NEW > Shape files (.shp .shx .dbf .prj, zipped or together)
  *    and save it with the same asset name (boundary_omo / boundary_gambari).
@@ -15,35 +16,33 @@
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 var sites = require('users/forestwatchng/forestwatchng:lib/sites');
 
-// Fill these in after checking the Console output (leave null to skip export).
-var CHOSEN_WDPAID = {
+// Position of the correct match in each list (0 = first). Leave null to skip export.
+var CHOSEN = {
   omo: null,
   gambari: null
 };
 
 Object.keys(cfg.SITES).forEach(function(key) {
   var matches = sites.searchWDPA(cfg.SITES[key].name);
-  // One line per match: WDPA ID, name, designation, reported area (km2) and mapped area (ha).
-  var summary = matches.map(function(f) {
-    return ee.Feature(null, {
-      WDPAID: f.get('WDPAID'),
-      NAME: f.get('NAME'),
-      DESIG_ENG: f.get('DESIG_ENG'),
-      REP_AREA_km2: f.get('REP_AREA'),
-      mapped_area_ha: f.geometry().area(100).divide(10000).round()
+  var list = matches.toList(10);
+  print(key + ': number of WDPA matches', matches.size());
+
+  // Full attributes of each match (works whatever the WDPA field names are).
+  list.evaluate(function(feats) {
+    if (!feats) { return; }
+    feats.forEach(function(f, i) {
+      var feat = ee.Feature(list.get(i));
+      print(key + ' match ' + i + ': attributes', feat.toDictionary());
+      print(key + ' match ' + i + ': mapped area (ha)',
+        feat.geometry().area(100).divide(10000).round());
     });
   });
-  print(key + ': WDPA matches (' + cfg.SITES[key].name + ')',
-    summary.reduceColumns(ee.Reducer.toList(5), ['WDPAID', 'NAME', 'DESIG_ENG', 'REP_AREA_km2', 'mapped_area_ha'])
-      .get('list'));
+
   Map.addLayer(matches, {color: key === 'omo' ? 'yellow' : 'cyan'}, key + ' (WDPA matches)');
 
-  var id = CHOSEN_WDPAID[key];
-  if (id !== null) {
-    var chosen = matches.filter(ee.Filter.eq('WDPAID', id))
-      .map(function(f) { return f.set('site', key); });
-    print(key + ': chosen boundary area (ha)',
-      chosen.geometry().area(100).divide(10000));
+  var idx = CHOSEN[key];
+  if (idx !== null) {
+    var chosen = ee.FeatureCollection([ee.Feature(list.get(idx)).set('site', key)]);
     Export.table.toAsset({
       collection: chosen,
       description: 'S3_boundary_' + key,
