@@ -28,6 +28,8 @@ windows.forEach(function(w) {
   var clearShare = img.select('n_clear').gte(1).unmask(0)
     .reduceRegion({reducer: ee.Reducer.mean(), geometry: aoi, scale: 100, maxPixels: 1e10});
   print(SITE + ' ' + w.label + ': share of area with >=1 clear S2 view', clearShare.get('n_clear'));
+  print(SITE + ' ' + w.label + ': median clear S2 views per pixel',
+    img.select('n_clear').reduceRegion({reducer: ee.Reducer.median(), geometry: aoi, scale: 100, maxPixels: 1e10}).get('n_clear'));
   print(SITE + ' ' + w.label + ': median S1 scenes per pixel',
     img.select('n_s1').reduceRegion({reducer: ee.Reducer.median(), geometry: aoi, scale: 100, maxPixels: 1e10}).get('n_s1'));
 
