@@ -3,12 +3,14 @@
  *   <ASSET_ROOT>/boundary_omo  and  <ASSET_ROOT>/boundary_gambari
  *
  * Steps
- * 1. Run. The Console lists WDPA matches for each reserve; they are drawn on the map.
+ * 1. Run. The Console lists each WDPA match as
+ *    [WDPAID, NAME, designation, reported area km2, mapped area ha]; matches are drawn on the map.
  * 2. Check each match against a published map of the reserve.
  * 3. If a match is right, set its WDPA ID (WDPAID) below and run the export task.
- * 4. If there is no match, or it is wrong, upload your own boundary instead:
+ * 4. If there is no match, or a better (official) boundary is available, upload it instead:
  *    Assets > NEW > Shape files (.shp .shx .dbf .prj, zipped or together)
  *    and save it with the same asset name (boundary_omo / boundary_gambari).
+ *    Replacing the asset later is fine: every other script reads it by name.
  */
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 var sites = require('users/forestwatchng/forestwatchng:lib/sites');
@@ -21,7 +23,19 @@ var CHOSEN_WDPAID = {
 
 Object.keys(cfg.SITES).forEach(function(key) {
   var matches = sites.searchWDPA(cfg.SITES[key].name);
-  print(key + ': WDPA matches', matches.select(['WDPAID', 'NAME', 'DESIG_ENG', 'REP_AREA', 'STATUS_YR']));
+  // One line per match: WDPA ID, name, designation, reported area (km2) and mapped area (ha).
+  var summary = matches.map(function(f) {
+    return ee.Feature(null, {
+      WDPAID: f.get('WDPAID'),
+      NAME: f.get('NAME'),
+      DESIG_ENG: f.get('DESIG_ENG'),
+      REP_AREA_km2: f.get('REP_AREA'),
+      mapped_area_ha: f.geometry().area(100).divide(10000).round()
+    });
+  });
+  print(key + ': WDPA matches (' + cfg.SITES[key].name + ')',
+    summary.reduceColumns(ee.Reducer.toList(5), ['WDPAID', 'NAME', 'DESIG_ENG', 'REP_AREA_km2', 'mapped_area_ha'])
+      .get('list'));
   Map.addLayer(matches, {color: key === 'omo' ? 'yellow' : 'cyan'}, key + ' (WDPA matches)');
 
   var id = CHOSEN_WDPAID[key];
