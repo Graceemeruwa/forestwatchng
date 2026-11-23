@@ -1,0 +1,44 @@
+# Keeps the Earth Engine Code Editor repository in step with GitHub.
+# On every push to main: merge any edits made in the Code Editor,
+# push the result to users/forestwatchng/forestwatchng (master), and back to GitHub.
+# Needs one repository secret: EE_GITCOOKIE (the line from your .gitcookies file).
+name: Mirror to Earth Engine
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ee-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Earth Engine credentials
+        env:
+          EE_GITCOOKIE: ${{ secrets.EE_GITCOOKIE }}
+        run: |
+          if [ -z "$EE_GITCOOKIE" ]; then echo "Secret EE_GITCOOKIE is not set"; exit 1; fi
+          printf '%s\n' "$EE_GITCOOKIE" > ~/.gitcookies
+          chmod 600 ~/.gitcookies
+          git config --global http.cookiefile ~/.gitcookies
+          git config --global user.name "forestwatch-mirror"
+          git config --global user.email "forestwatch-mirror@users.noreply.github.com"
+
+      - name: Merge Code Editor edits, then push to Earth Engine and GitHub
+        run: |
+          git remote add ee https://earthengine.googlesource.com/users/forestwatchng/forestwatchng
+          if git fetch ee master; then
+            git merge --no-edit --allow-unrelated-histories ee/master
+          fi
+          git push ee HEAD:master
+          git push origin HEAD:main
