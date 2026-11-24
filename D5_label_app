@@ -1,0 +1,142 @@
+/**** D5b - Labelling app (owners: Abiodun, Member 3) ****
+ * Swipe between BEFORE (dry 2024/25) and AFTER (dry 2025/26) Sentinel-2 images,
+ * with high-resolution Google satellite imagery underneath, and label each point:
+ *   0 = stable forest, 1 = forest loss, 2 = non-forest. Skip if you cannot tell.
+ *
+ * Before you run: set LABELLER, START and END (see the labelling guide).
+ * Save every session: click "Save labels", then RUN the task in the Tasks tab.
+ * The Console also prints a backup copy of your labels after each save.
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var comp = require('users/forestwatchng/forestwatchng:lib/composites');
+
+// ---- Settings ----------------------------------------------------------------
+var SITE = 'omo';
+var LABELLER = 'abiodun';            // your first name, lower case, no spaces
+var START = 0;                       // first point (by pid) in this session
+var END = 150;                       // stop before this point
+var MODE = 'train';                  // 'train' now; 'validate' later (hides Hansen layer)
+var POINTS = cfg.ASSET_ROOT + (MODE === 'train' ? '/cand_' : '/valpts_') + SITE;
+// --------------------------------------------------------------------------------
+
+var CLASSES = [
+  {code: 0, name: 'Stable forest', color: '#1b7837'},
+  {code: 1, name: 'Forest loss', color: '#d7191c'},
+  {code: 2, name: 'Non-forest', color: '#7f7f7f'}
+];
+
+var base = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.baseline.label);
+var recent = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.recent.label);
+var last90 = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + comp.last90Window().label);
+var loss2025 = ee.Image('UMD/hansen/global_forest_change_2025_v1_13').select('lossyear').unmask(0).eq(25).selfMask();
+
+var falseColour = {bands: ['B11', 'B8', 'B4'], min: 0.02, max: 0.35};
+var trueColour = {bands: ['B4', 'B3', 'B2'], min: 0.0, max: 0.12, gamma: 1.3};
+
+// Two linked maps with a swipe bar: left = BEFORE, right = AFTER.
+var left = ui.Map(), right = ui.Map();
+[left, right].forEach(function(m) { m.setOptions('SATELLITE'); m.setControlVisibility({zoomControl: true, layerList: true}); });
+ui.Map.Linker([left, right]);
+left.addLayer(base, falseColour, 'BEFORE false colour (dry 2024/25)', true);
+left.addLayer(base, trueColour, 'BEFORE true colour', false);
+right.addLayer(recent, falseColour, 'AFTER false colour (dry 2025/26)', true);
+right.addLayer(recent, trueColour, 'AFTER true colour', false);
+right.addLayer(last90, falseColour, 'NOW false colour (last 90 days)', false);
+right.addLayer(recent, {bands: ['VH'], min: -22, max: -10}, 'AFTER radar VH (bright = trees)', false);
+if (MODE === 'train') {
+  right.addLayer(loss2025, {palette: ['ffff00']}, 'Hansen 2025 loss (hint only)', false);
+}
+var split = ui.SplitPanel({firstPanel: left, secondPanel: right, wipe: true});
+
+// Point marker: the 10 m pixel footprint, drawn on both maps.
+var markerL = ui.Map.Layer(ee.Geometry.Point([0, 0]), {color: 'yellow'}, 'Point');
+var markerR = ui.Map.Layer(ee.Geometry.Point([0, 0]), {color: 'yellow'}, 'Point');
+left.layers().add(markerL); right.layers().add(markerR);
+
+// Side panel.
+var panel = ui.Panel({style: {width: '300px', padding: '8px'}});
+panel.add(ui.Label('ForestWatch NG - labelling', {fontWeight: 'bold', fontSize: '16px'}));
+panel.add(ui.Label('Site: ' + SITE + ' | labeller: ' + LABELLER + ' | points ' + START + '-' + (END - 1)));
+var status = ui.Label('Loading points...');
+var current = ui.Label('', {fontWeight: 'bold'});
+var counts = ui.Label('');
+var lowConf = ui.Checkbox('Low confidence', false);
+panel.add(status).add(current);
+
+var points = [];      // client-side list of {pid, lon, lat}
+var labels = {};      // pid -> {cls, low}
+var i = 0;
+
+function updateCounts() {
+  var c = {0: 0, 1: 0, 2: 0, skip: 0};
+  Object.keys(labels).forEach(function(k) { c[labels[k].cls] += 1; });
+  counts.setValue('Labelled: forest ' + c[0] + ' | loss ' + c[1] + ' | non-forest ' + c[2] + ' | skipped ' + c.skip);
+}
+
+function show(k) {
+  if (points.length === 0) { return; }
+  i = Math.max(0, Math.min(k, points.length - 1));
+  var p = points[i];
+  var pt = ee.Geometry.Point([p.lon, p.lat]);
+  // Outline of a ~10 m square around the point (the pixel being labelled).
+  var outline = ee.Geometry.LineString(pt.buffer(5).bounds().coordinates().get(0));
+  markerL.setEeObject(outline);
+  markerR.setEeObject(outline);
+  left.setCenter(p.lon, p.lat, 17);
+  var done = labels[p.pid];
+  status.setValue('Point ' + (i + 1) + ' of ' + points.length + '  (pid ' + p.pid + ')');
+  current.setValue(done ? 'Current label: ' + (done.cls === 'skip' ? 'skipped' : CLASSES[done.cls].name) + (done.low ? ' (low confidence)' : '') : 'Not labelled yet');
+  lowConf.setValue(done ? done.low : false, false);
+}
+
+function setLabel(cls) {
+  var p = points[i];
+  labels[p.pid] = {cls: cls, low: lowConf.getValue()};
+  updateCounts();
+  show(i + 1);
+}
+
+CLASSES.forEach(function(c) {
+  panel.add(ui.Button({label: c.code + '  ' + c.name, style: {stretch: 'horizontal', color: c.color},
+    onClick: function() { setLabel(c.code); }}));
+});
+panel.add(ui.Button({label: 'Skip / cannot tell', style: {stretch: 'horizontal'}, onClick: function() { setLabel('skip'); }}));
+panel.add(lowConf);
+panel.add(ui.Panel([
+  ui.Button('< Previous', function() { show(i - 1); }),
+  ui.Button('Next >', function() { show(i + 1); })
+], ui.Panel.Layout.flow('horizontal')));
+var jump = ui.Textbox({placeholder: 'Go to point number'});
+jump.onChange(function(v) { show(parseInt(v, 10) - 1); });
+panel.add(jump);
+panel.add(counts);
+
+panel.add(ui.Button({label: 'Save labels (creates a task)', style: {stretch: 'horizontal', fontWeight: 'bold'}, onClick: function() {
+  var feats = points.filter(function(p) { return labels[p.pid] !== undefined; }).map(function(p) {
+    var l = labels[p.pid];
+    return ee.Feature(ee.Geometry.Point([p.lon, p.lat]), {
+      pid: p.pid, site: SITE, labeller: LABELLER, mode: MODE,
+      class: l.cls === 'skip' ? -1 : l.cls, low_conf: l.low ? 1 : 0
+    });
+  });
+  var name = 'labels_' + MODE + '_' + SITE + '_' + LABELLER + '_' + START + '_' + END;
+  Export.table.toAsset({collection: ee.FeatureCollection(feats), description: name, assetId: cfg.ASSET_ROOT + '/' + name});
+  print('Backup of ' + feats.length + ' labels (pid:class:low)',
+    Object.keys(labels).sort().map(function(k) { return k + ':' + labels[k].cls + ':' + (labels[k].low ? 1 : 0); }).join(' '));
+  status.setValue('Saved. Now RUN the task "' + name + '" in the Tasks tab.');
+}}));
+
+panel.add(ui.Label('Tip: drag the swipe bar to compare BEFORE (left) and AFTER (right). ' +
+  'Turn on the radar or last-90-days layers in the right map\'s layer list.', {fontSize: '11px', color: 'gray'}));
+
+ui.root.clear();
+ui.root.add(ui.SplitPanel(panel, split));
+
+// Load the points for this session.
+ee.FeatureCollection(POINTS).sort('pid').toList(END - START, START).evaluate(function(list) {
+  points = list.map(function(f) {
+    return {pid: f.properties.pid, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1]};
+  });
+  updateCounts();
+  show(0);
+});

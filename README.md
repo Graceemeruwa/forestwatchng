@@ -18,6 +18,8 @@ This repository mirrors the Earth Engine Code Editor repository
 | S3 | `S3_boundaries` | Abiodun | `boundary_omo`, `boundary_gambari` |
 | D1 | `D1_forest_baseline` | Member 2 | `forest2025_<site>` |
 | D2/D3 | `D2_D3_composites` | Member 2 | `comp_<site>_<window>` |
+| D5a | `D5_candidate_points` | Abiodun | `cand_<site>` (+ CSV/KML in Drive) |
+| D5b | `D5_label_app` | Abiodun, Member 3 | `labels_train_<site>_<name>_<start>_<end>` |
 
 Run each script for `SITE = 'omo'` first, then `'gambari'`. Start the export tasks
 from the Tasks tab.

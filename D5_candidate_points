@@ -1,0 +1,62 @@
+/**** D5a - Candidate points for training labels (owner: Abiodun) ****
+ * Draws candidate points in three strata so every class is well represented:
+ *   stratum 0 = likely stable forest  (forest 2025, no Hansen 2025 loss, no NBR drop)
+ *   stratum 1 = likely forest loss    (forest 2025 with Hansen 2025 loss OR a strong NBR drop)
+ *   stratum 2 = non-forest            (not forest at the start of 2025)
+ * The stratum is only a guess to balance the sample. Labellers do NOT see it,
+ * and the label they give is what counts.
+ *
+ * Needs: forest2025_<site>, comp_<site>_dry_2024_25, comp_<site>_dry_2025_26.
+ * Output: asset cand_<site> (fields: pid, site, stratum, lon, lat)
+ *         plus CSV and KML copies in Google Drive (for ArcGIS Pro / Google Earth Pro).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+var SITE = 'omo';
+var N_PER_STRATUM = 250;   // 750 candidates in total
+var SEED = 42;
+
+var aoi = sites.aoi(SITE);
+var forest = ee.Image(cfg.ASSET_ROOT + '/forest2025_' + SITE).unmask(0);
+var base = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.baseline.label);
+var recent = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.recent.label);
+var dNBR = recent.select('NBR').subtract(base.select('NBR'));
+var loss2025 = ee.Image('UMD/hansen/global_forest_change_2025_v1_13')
+  .select('lossyear').unmask(0).eq(25);
+
+var likelyLoss = forest.eq(1).and(loss2025.or(dNBR.lt(-0.15)));
+var likelyStable = forest.eq(1).and(loss2025.not()).and(dNBR.gt(-0.05));
+var nonForest = forest.eq(0);
+
+// 9 = forest pixels that fit neither stratum (small NBR drop, no Hansen loss): left out.
+var strataAll = ee.Image(9).where(likelyStable, 0).where(likelyLoss, 1).where(nonForest, 2);
+var strata = strataAll.updateMask(strataAll.neq(9)).rename('stratum').toInt().clip(aoi);
+
+var pts = strata.stratifiedSample({
+  numPoints: N_PER_STRATUM, classBand: 'stratum', region: aoi,
+  scale: cfg.SCALE, seed: SEED, geometries: true, tileScale: 4
+}).randomColumn('order', SEED).sort('order');   // shuffle so classes are mixed
+
+var list = pts.toList(pts.size());
+var cand = ee.FeatureCollection(ee.List.sequence(0, list.size().subtract(1)).map(function(i) {
+  var f = ee.Feature(list.get(i));
+  var xy = f.geometry().coordinates();
+  return ee.Feature(f.geometry(), {
+    pid: ee.Number(i).format('%04d'),
+    site: SITE,
+    stratum: f.get('stratum'),
+    lon: xy.get(0),
+    lat: xy.get(1)
+  });
+}));
+
+print(SITE + ': candidates per stratum', cand.aggregate_histogram('stratum'));
+Map.centerObject(aoi, 11);
+Map.addLayer(strata, {min: 0, max: 2, palette: ['1b7837', 'd7191c', 'bababa']}, 'Strata (0 forest, 1 loss, 2 non-forest)', false);
+Map.addLayer(cand, {color: 'yellow'}, 'Candidate points');
+
+Export.table.toAsset({collection: cand, description: 'D5_cand_' + SITE, assetId: cfg.ASSET_ROOT + '/cand_' + SITE});
+Export.table.toDrive({collection: cand, description: 'D5_cand_' + SITE + '_csv', folder: 'forestwatch', fileFormat: 'CSV',
+  selectors: ['pid', 'site', 'lon', 'lat']});
+Export.table.toDrive({collection: cand.select(['pid']), description: 'D5_cand_' + SITE + '_kml', folder: 'forestwatch', fileFormat: 'KML'});
