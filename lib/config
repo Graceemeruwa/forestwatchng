@@ -17,8 +17,11 @@ exports.SITES = {
 // Buffer around each reserve, in metres. Encroachment starts at the edges.
 exports.BUFFER_M = 5000;
 
-// Forest definition: Hansen tree cover in 2000 of at least this percentage.
-exports.TREE_COVER_MIN = 30;
+// Forest definition, aligned with Nigeria's national definition (FREL 2026):
+// canopy cover >= 15%, area >= 0.5 ha, trees >= 3 m; plantations count as forest.
+// Applied here as Hansen tree cover in 2000 >= 15% and a 0.5 ha minimum patch size.
+exports.TREE_COVER_MIN = 15;
+exports.MIN_PATCH_HA = 0.5;   // smallest clearing reported (50 Sentinel-2 pixels)
 
 // Last Hansen loss year counted before monitoring starts (24 = 2024).
 exports.BASELINE_LAST_LOSS_YEAR = 24;
