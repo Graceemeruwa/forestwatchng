@@ -129,8 +129,12 @@ panel.add(ui.Button({label: 'Save labels (creates a task)', style: {stretch: 'ho
 panel.add(ui.Label('Tip: drag the swipe bar to compare BEFORE (left) and AFTER (right). ' +
   'Turn on the radar or last-90-days layers in the right map\'s layer list.', {fontSize: '11px', color: 'gray'}));
 
+// Side panel on the left, swipe maps filling the rest of the screen.
+split.style().set('stretch', 'both');
 ui.root.clear();
-ui.root.add(ui.SplitPanel(panel, split));
+ui.root.setLayout(ui.Panel.Layout.flow('horizontal'));
+ui.root.add(panel);
+ui.root.add(split);
 
 // Load the points for this session.
 ee.FeatureCollection(POINTS).sort('pid').toList(END - START, START).evaluate(function(list) {
