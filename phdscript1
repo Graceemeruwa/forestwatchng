@@ -73,7 +73,7 @@ var SITES_ASSET = 'projects/' + PROJECT + '/assets/study_sites';
 // export. Switch to true only after that export task has completed, and only
 // if the entry at SITES_ASSET is a table. An Earth Engine folder of that name
 // is a different kind of asset and cannot be read as a FeatureCollection.
-var USE_ASSET = 'True';
+var USE_ASSET = false;
 
 var ng = ee.FeatureCollection('WCMC/WDPA/current/polygons')
            .filter(ee.Filter.eq('ISO3', 'NGA'));
@@ -325,19 +325,39 @@ function algImage(geom, a) {
  * Masked on the basic filter only. Sensitivity is a column rather than a
  * filter, so thresholds can be varied in analysis instead of being fixed here.
  *
- * dropNulls is true, so a row appears only where every listed prediction
- * exists. Expect fewer rows than the basic footprint count. That is the right
- * basis for comparing algorithms, which needs complete cases, and the
- * shortfall itself is worth recording.
+ * Row counts should match the basic-filter footprint counts: 28,751 at Omo,
+ * 6,376 at Akure-Ofosu, 3,355 at Gambari. Section E prints them so this can be
+ * checked before the exports are started.
+ *
+ * In analysis, treat -9999 as missing and filter each candidate prediction on
+ * its own sensitivity_aN and l4_quality_flag_aN.
  * ======================================================================== */
-var TABLE_BANDS = [
-  'agbd', 'agbd_se', 'agbd_a2', 'agbd_a5', 'agbd_a6', 'agbd_a10',
-  'sensitivity', 'sensitivity_a5', 'selected_algorithm',
-  'lon_lowestmode', 'lat_lowestmode'
-];
+print('===== E. FOOTPRINT TABLE EXPORT =====');
 
+var ALG_SUFFIX = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a10'];
+
+var TABLE_BANDS = ['agbd', 'agbd_se', 'sensitivity', 'selected_algorithm',
+                   'lon_lowestmode', 'lat_lowestmode']
+  .concat(ALG_SUFFIX.map(function (a) { return 'agbd_' + a; }))
+  .concat(ALG_SUFFIX.map(function (a) { return 'sensitivity_' + a; }))
+  .concat(ALG_SUFFIX.map(function (a) { return 'l4_quality_flag_' + a; }));
+
+var NODATA = -9999;
+
+// Google Drive keeps files of the same name side by side rather than replacing
+// them. Bump TAG whenever the column set changes so each export lands under a
+// filename of its own.
+var TAG = 'v2';
+
+/**
+ * One row per footprint. agbd carries the mask, so a row exists wherever a
+ * quality-filtered footprint exists. The per-algorithm bands are masked
+ * independently of agbd, so they are cast to float and filled with NODATA
+ * before agbd's mask is reapplied. Every row is then complete and a missing
+ * prediction reads as -9999 rather than dropping the footprint.
+ */
 function footprintImage(geom) {
-  return gediRaw.filterBounds(geom)
+  var m = gediRaw.filterBounds(geom)
     .map(function (im) {
       return im.updateMask(im.select('l4_quality_flag').eq(1))
                .updateMask(im.select('degrade_flag').eq(0))
@@ -346,6 +366,9 @@ function footprintImage(geom) {
     .mosaic()
     .updateMask(slope.lt(SLOPE_MAX))
     .clip(geom);
+
+  var valid = m.select('agbd').mask();
+  return m.toFloat().unmask(NODATA).updateMask(valid);
 }
 
 ['Omo', 'Gambari', 'Akure_Ofosu'].forEach(function (name) {
@@ -354,9 +377,12 @@ function footprintImage(geom) {
     region: g, scale: 25, geometries: false, dropNulls: true, tileScale: 16
   }).map(function (f) { return f.set('site', name); });
 
+  print('  rows, ' + name + ':', pts.size());
+
   Export.table.toDrive({
     collection: pts,
-    description: 'GEDI_footprints_' + name,
+    description: 'GEDI_footprints_' + TAG + '_' + name,
+    fileNamePrefix: 'GEDI_footprints_' + TAG + '_' + name,
     fileFormat: 'CSV',
     selectors: TABLE_BANDS.concat(['site'])
   });
