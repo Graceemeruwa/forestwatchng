@@ -1,0 +1,96 @@
+/**** D5c - Calibration check: do the labellers agree? (owner: Abiodun) ****
+ * Reads every training-label asset for the site, keeps points 0-49 (the calibration set),
+ * and prints:
+ *   - labels per class for each labeller
+ *   - agreement and Cohen's kappa for each pair of labellers
+ *   - every point where labellers disagree, with each person's label
+ *   - the majority label for each calibration point
+ * Skipped points (-1) are left out of agreement. Low-confidence labels are marked with *.
+ * To review a disagreement, open D5_label_app with START = 0, END = 50 and type
+ * (pid + 1) in "Go to point number" (pid 0007 -> 8).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+
+var SITE = 'omo';
+var CAL_END = 50;   // calibration points are pid 0 to CAL_END - 1
+var NAMES = {'0': 'forest', '1': 'loss', '2': 'non-forest', '-1': 'skip'};
+
+// Find all label assets for this site.
+var assets = ee.data.listAssets(cfg.ASSET_ROOT).assets || [];
+var ids = assets.map(function(a) { return a.id || a.name; }).filter(function(id) {
+  return id.indexOf('/labels_train_' + SITE + '_') !== -1;
+});
+print('Label assets found', ids);
+
+var all = ee.FeatureCollection(ids.map(function(id) { return ee.FeatureCollection(id); })).flatten()
+  .filter(ee.Filter.lt('pid', ee.Number(CAL_END).format('%04d')));
+
+all.reduceColumns(ee.Reducer.toList(4), ['pid', 'labeller', 'class', 'low_conf']).get('list').evaluate(function(rows) {
+  // byPid[pid][labeller] = {cls, low}; later sessions overwrite earlier ones.
+  var byPid = {}, people = {};
+  rows.forEach(function(r) {
+    var pid = r[0], who = r[1];
+    people[who] = true;
+    byPid[pid] = byPid[pid] || {};
+    byPid[pid][who] = {cls: String(r[2]), low: r[3] === 1};
+  });
+  var names = Object.keys(people).sort();
+  var pids = Object.keys(byPid).sort();
+
+  // Labels per class per labeller.
+  var counts = {};
+  names.forEach(function(n) {
+    var c = {forest: 0, loss: 0, 'non-forest': 0, skip: 0, low_conf: 0, total: 0};
+    pids.forEach(function(p) {
+      var l = byPid[p][n];
+      if (l) { c[NAMES[l.cls]] += 1; c.total += 1; if (l.low) { c.low_conf += 1; } }
+    });
+    counts[n] = c;
+  });
+  print('Labels per labeller (calibration points)', counts);
+
+  // Pairwise agreement and Cohen's kappa.
+  var pairs = {};
+  for (var a = 0; a < names.length; a++) {
+    for (var b = a + 1; b < names.length; b++) {
+      var n = 0, agree = 0, pa = {}, pb = {};
+      pids.forEach(function(p) {
+        var la = byPid[p][names[a]], lb = byPid[p][names[b]];
+        if (!la || !lb || la.cls === '-1' || lb.cls === '-1') { return; }
+        n += 1;
+        if (la.cls === lb.cls) { agree += 1; }
+        pa[la.cls] = (pa[la.cls] || 0) + 1;
+        pb[lb.cls] = (pb[lb.cls] || 0) + 1;
+      });
+      var po = n ? agree / n : 0, pe = 0;
+      ['0', '1', '2'].forEach(function(k) { pe += ((pa[k] || 0) / (n || 1)) * ((pb[k] || 0) / (n || 1)); });
+      var kappa = pe < 1 ? (po - pe) / (1 - pe) : 1;
+      pairs[names[a] + ' vs ' + names[b]] = {
+        points_compared: n,
+        agreement_pct: Math.round(po * 1000) / 10,
+        kappa: Math.round(kappa * 100) / 100
+      };
+    }
+  }
+  print('Agreement between labellers (target: 85% or more)', pairs);
+
+  // Disagreements and majority labels.
+  var disagreements = [], majority = {};
+  pids.forEach(function(p) {
+    var votes = {}, line = [];
+    names.forEach(function(n) {
+      var l = byPid[p][n];
+      if (!l) { return; }
+      line.push(n + ': ' + NAMES[l.cls] + (l.low ? '*' : ''));
+      if (l.cls !== '-1') { votes[l.cls] = (votes[l.cls] || 0) + 1; }
+    });
+    var keys = Object.keys(votes);
+    if (keys.length > 1) { disagreements.push('pid ' + p + ' (go to ' + (parseInt(p, 10) + 1) + ') | ' + line.join(' | ')); }
+    var best = null, bestN = 0;
+    keys.forEach(function(k) { if (votes[k] > bestN) { best = k; bestN = votes[k]; } });
+    var tie = keys.filter(function(k) { return votes[k] === bestN; }).length > 1;
+    majority[p] = tie ? 'TIE - Abiodun decides' : NAMES[best];
+  });
+  print('Points where labellers disagree: ' + disagreements.length, disagreements);
+  print('Majority label per calibration point', majority);
+});
