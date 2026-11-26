@@ -28,11 +28,13 @@ var forest = ee.Image(cfg.ASSET_ROOT + '/forest2025_' + SITE).unmask(0).eq(1);
 var BANDS = ['B2', 'B3', 'B4', 'B8', 'B11', 'B12', 'NDVI', 'NBR', 'NDMI', 'VV', 'VH', 'VH_VV'];
 var before = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.baseline.label).select(BANDS);
 var after = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.recent.label).select(BANDS);
-var stack = after.regexpRename('^(.*)$', 'a_$1')
+var raw = after.regexpRename('^(.*)$', 'a_$1')
   .addBands(after.subtract(before).regexpRename('^(.*)$', 'd_$1'))
   .focalMean(1, 'square', 'pixels')            // 3 x 3 pixels = the 30 m labelling box
-  .reproject({crs: 'EPSG:32631', scale: 10})
   .clip(aoi);
+// Fixed 10 m grid for training, area figures and exports (exact, but heavy).
+var stack = raw.reproject({crs: 'EPSG:32631', scale: 10});
+// Lighter version for viewing on the map only (Earth Engine picks the scale per zoom level).
 var featureNames = stack.bandNames();
 
 // ---- Labels: merge, majority vote, clean ---------------------------------------
@@ -75,7 +77,7 @@ ee.FeatureCollection(ids.map(function(id) { return ee.FeatureCollection(id); }))
 
 function run(labels) {
   // ---- Train and quick check ------------------------------------------------------
-  var samples = stack.sampleRegions({collection: labels, properties: ['class', 'pid'], scale: 10, tileScale: 4})
+  var samples = stack.sampleRegions({collection: labels, properties: ['class', 'pid'], scale: 10, tileScale: 4, geometries: true})
     .randomColumn('r', SEED);
   var train = samples.filter(ee.Filter.lt('r', 0.7));
   var test = samples.filter(ee.Filter.gte('r', 0.7));
@@ -99,23 +101,32 @@ function run(labels) {
   print('Most useful features', ee.Dictionary(rf.explain().get('importance')));
 
   // ---- Map ------------------------------------------------------------------------------
-  var classes = stack.classify(rf).rename('class');
-  var loss = classes.eq(1).and(forest);
   var minPixels = cfg.MIN_PATCH_HA * 10000 / (cfg.SCALE * cfg.SCALE);   // 0.5 ha = 50 pixels
-  loss = loss.updateMask(loss).updateMask(loss.selfMask().connectedPixelCount(256, true).gte(minPixels))
-    .rename('loss').toByte();
+  function lossFrom(img) {
+    var l = img.classify(rf).eq(1).and(forest);
+    return l.updateMask(l).updateMask(l.selfMask().connectedPixelCount(64, true).gte(minPixels)).rename('loss').toByte();
+  }
+  var classes = stack.classify(rf).rename('class');
+  var loss = lossFrom(stack);                 // for area figures and export
+  var lossView = raw.classify(rf).eq(1).and(forest).selfMask();   // quick view: no 0.5 ha filter
 
   var lossHa = ee.Image.pixelArea().divide(10000).updateMask(loss).reduceRegion({
     reducer: ee.Reducer.sum(), geometry: sites.boundary(SITE).geometry(), scale: 10, maxPixels: 1e10, tileScale: 4
   });
   print('Forest loss between the two dry seasons, inside the reserve (ha, patches >= ' + cfg.MIN_PATCH_HA + ' ha)',
     lossHa.get('area'));
+  // Sanity check: Hansen's 2025 loss inside the same forest and reserve.
+  var hansen25 = ee.Image('UMD/hansen/global_forest_change_2025_v1_13').select('lossyear').unmask(0).eq(25).and(forest);
+  print('For comparison: Hansen 2025 loss in the same forest (ha)',
+    ee.Image.pixelArea().divide(10000).updateMask(hansen25).reduceRegion({
+      reducer: ee.Reducer.sum(), geometry: sites.boundary(SITE).geometry(), scale: 30, maxPixels: 1e10
+    }).get('area'));
 
   Map.centerObject(sites.boundary(SITE), 11);
   Map.setOptions('SATELLITE');
   Map.addLayer(after, {bands: ['B11', 'B8', 'B4'], min: [0.05, 0.10, 0.01], max: [0.35, 0.45, 0.15]}, 'AFTER (dry 2025/26)', false);
-  Map.addLayer(classes, {min: 0, max: 2, palette: ['1b7837', 'd7191c', 'bababa']}, 'Classes (green forest, red loss, grey non-forest)', false);
-  Map.addLayer(loss, {palette: ['ff0000']}, 'Forest loss (>= 0.5 ha)');
+  Map.addLayer(raw.classify(rf), {min: 0, max: 2, palette: ['1b7837', 'd7191c', 'bababa']}, 'Classes (green forest, red loss, grey non-forest)', false);
+  Map.addLayer(lossView, {palette: ['ff0000']}, 'Forest loss (quick view, no size filter)');
   Map.addLayer(ee.Image().paint(sites.boundary(SITE), 0, 2), {palette: ['ffffff']}, 'Reserve boundary');
   Map.addLayer(labels, {color: 'yellow'}, 'Training points', false);
 
