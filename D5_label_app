@@ -76,8 +76,8 @@ function drawCharts(p) {
     .linkCollection(csPlus, ['cs_cdf'])
     .map(function(img) {
       var clear = img.select('cs_cdf').gte(cfg.CS_THRESHOLD);
-      return img.normalizedDifference(['B8', 'B12']).rename('NBR').updateMask(clear)
-        .copyProperties(img, ['system:time_start']);
+      return ee.Image(img.normalizedDifference(['B8', 'B12']).rename('NBR').updateMask(clear)
+        .copyProperties(img, ['system:time_start']));
     });
   var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
     .filterBounds(box).filterDate(start, end)
@@ -107,10 +107,10 @@ var status = ui.Label('Loading points...');
 var current = ui.Label('', {fontWeight: 'bold'});
 var counts = ui.Label('');
 var lowConf = ui.Checkbox('Low confidence', false);
-panel.add(ui.Label('Q1: Was the box mostly forest BEFORE?  No -> 2 Non-forest.\n' +
-  'Q2: Is it still mostly forest AFTER?  Yes -> 0 Stable forest.  No -> 1 Forest loss.\n' +
-  'Use the charts: a sudden lasting drop = clearing; a steady line = no change.',
-  {whiteSpace: 'pre', fontSize: '12px', color: '#444444'}));
+var qStyle = {fontSize: '12px', color: '#444444', margin: '0 8px'};
+panel.add(ui.Label('Q1: Was the box mostly forest BEFORE? No: 2 Non-forest.', qStyle));
+panel.add(ui.Label('Q2: Still mostly forest AFTER? Yes: 0 Stable forest. No: 1 Forest loss.', qStyle));
+panel.add(ui.Label('Charts (scroll down): a sudden lasting drop = clearing; a flat line = no change.', qStyle));
 panel.add(status).add(current);
 
 var points = [];      // client-side list of {pid, lon, lat}
@@ -141,11 +141,16 @@ function show(k) {
   markerL.setEeObject(marker);
   markerR.setEeObject(marker);
   left.setCenter(p.lon, p.lat, ZOOM);
-  drawCharts(p);
   var done = labels[p.pid];
   status.setValue('Point ' + (i + 1) + ' of ' + points.length + '  (pid ' + p.pid + ')');
   current.setValue(done ? 'Current label: ' + (done.cls === 'skip' ? 'skipped' : CLASSES[done.cls].name) + (done.low ? ' (low confidence)' : '') : 'Not labelled yet');
   lowConf.setValue(done ? done.low : false, false);
+  // Charts last, and guarded, so a chart problem can never stop labelling.
+  try {
+    drawCharts(p);
+  } catch (err) {
+    chartPanel.widgets().reset([ui.Label('Charts unavailable: ' + err, {color: 'red', fontSize: '11px'})]);
+  }
 }
 
 function setLabel(cls) {
