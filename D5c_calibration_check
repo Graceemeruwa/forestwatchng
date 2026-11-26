@@ -17,10 +17,13 @@ var ROUND = 2;
 var RANGES = {1: [0, 50], 2: [100, 130]};
 var NAMES = {'0': 'forest', '1': 'loss', '2': 'non-forest', '-1': 'skip'};
 
-// Find all label assets for this site.
+// Find all label assets for this site, from both app versions:
+// labels_train_<site>_... (earlier app) and labels_v2_train_<site>_... (D5_label_app_v2).
+// Both have the same fields; only the calibration points of ROUND are kept below.
 var assets = ee.data.listAssets(cfg.ASSET_ROOT).assets || [];
 var ids = assets.map(function(a) { return a.id || a.name; }).filter(function(id) {
-  return id.indexOf('/labels_train_' + SITE + '_') !== -1;
+  return id.indexOf('/labels_train_' + SITE + '_') !== -1 ||
+         id.indexOf('/labels_v2_train_' + SITE + '_') !== -1;
 });
 print('Label assets found', ids);
 
