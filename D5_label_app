@@ -78,16 +78,21 @@ function seriesValues(col, band, box) {
 }
 
 function makeChart(rows, label, title, vmin, vmax, colour) {
-  var table = {
-    cols: [{id: 'd', label: 'Date', type: 'date'}, {id: 'v', label: label, type: 'number'}],
-    rows: rows.map(function(r) { return {c: [{v: new Date(r[0])}, {v: r[1]}]}; })
-  };
-  var chart = ui.Chart(table, 'ScatterChart', {
-    title: title, legend: {position: 'none'}, pointSize: 3, colors: [colour],
-    hAxis: {format: 'MMM yy'}, vAxis: {viewWindow: {min: vmin, max: vmax}},
-    chartArea: {width: '78%', height: '62%'}
-  });
-  chart.style().set({width: '350px', height: '170px'});
+  if (!rows || rows.length === 0) {
+    return ui.Label(title + ': no clear observations for this box.', {fontSize: '11px', color: 'gray'});
+  }
+  // x = decimal year (e.g. 2025.5 = early July 2025), y = value.
+  var x = rows.map(function(r) { var d = new Date(r[0]); return d.getUTCFullYear() + d.getUTCMonth() / 12 + (d.getUTCDate() - 1) / 365; });
+  var y = rows.map(function(r) { return r[1]; });
+  var chart = ui.Chart.array.values({array: y, axis: 0, xLabels: x})
+    .setChartType('ScatterChart')
+    .setOptions({
+      title: title, legend: {position: 'none'}, pointSize: 3, colors: [colour],
+      hAxis: {title: 'Year', format: '####.#', viewWindow: {min: 2023.8, max: 2027.0}},
+      vAxis: {title: label, viewWindow: {min: vmin, max: vmax}},
+      chartArea: {width: '72%', height: '58%'}
+    });
+  chart.style().set({width: '350px', height: '190px'});
   return chart;
 }
 
@@ -117,7 +122,7 @@ function drawCharts(p) {
       return;
     }
     chartPanel.widgets().reset([
-      ui.Label('BEFORE window: Nov 2024-Mar 2025. AFTER window: Nov 2025-Mar 2026.', {fontSize: '11px', color: 'gray'}),
+      ui.Label('BEFORE window = 2024.8 to 2025.2 on the year axis. AFTER window = 2025.8 to 2026.2.', {fontSize: '11px', color: 'gray'}),
       makeChart(res.s2, 'NBR', 'Optical NBR (forest ~0.4-0.7; clearing drops sharply)', -0.3, 0.8, '#1b7837'),
       makeChart(res.s1, 'VH dB', 'Radar VH dB (forest ~ -12 to -15; clearing falls lower)', -25, -8, '#2c7fb8')
     ]);
