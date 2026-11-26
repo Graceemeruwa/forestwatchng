@@ -1,4 +1,4 @@
-# ForestWatch NG
+# ForestSight
 
 Early warning and hotspot prioritisation for Nigerian forest reserves (Wale Lab Hackathon 2026).
 Pilot: Omo Forest Reserve (Ogun). Independent test: Gambari Forest Reserve (Oyo).

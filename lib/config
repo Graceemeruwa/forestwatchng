@@ -1,4 +1,4 @@
-/**** ForestWatch NG - shared settings ****
+/**** ForestSight - shared settings ****
  * Every script loads this file. Change settings here only.
  * Load with:
  *   var cfg = require('users/forestwatchng/forestwatchng:lib/config');

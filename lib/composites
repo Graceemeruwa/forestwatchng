@@ -1,4 +1,4 @@
-/**** ForestWatch NG - satellite composites ****
+/**** ForestSight - satellite composites ****
  * var comp = require('users/forestwatchng/forestwatchng:lib/composites');
  *
  * s2(aoi, start, end): cloud-masked Sentinel-2 median composite

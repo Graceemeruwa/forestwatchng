@@ -65,7 +65,7 @@ left.layers().add(markerL); right.layers().add(markerR);
 
 // Side panel.
 var panel = ui.Panel({style: {width: '300px', padding: '8px'}});
-panel.add(ui.Label('ForestWatch NG - labelling', {fontWeight: 'bold', fontSize: '16px'}));
+panel.add(ui.Label('ForestSight - labelling', {fontWeight: 'bold', fontSize: '16px'}));
 panel.add(ui.Label('Site: ' + SITE + ' | labeller: ' + LABELLER + ' | points ' + START + '-' + (END - 1)));
 var status = ui.Label('Loading points...');
 var current = ui.Label('', {fontWeight: 'bold'});

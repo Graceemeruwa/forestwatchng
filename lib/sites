@@ -1,4 +1,4 @@
-/**** ForestWatch NG - study-site helpers ****
+/**** ForestSight - study-site helpers ****
  * var sites = require('users/forestwatchng/forestwatchng:lib/sites');
  */
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
