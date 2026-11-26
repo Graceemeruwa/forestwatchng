@@ -1,0 +1,128 @@
+/**** D4 + D6 + D7 - Change model and first loss map (owner: Member 2 / Abiodun) ****
+ * 1. Merges every saved training-label asset for the site into one training set:
+ *    - skipped points and low-confidence labels are left out
+ *    - where several people labelled a point, the majority label is used; ties are left out
+ * 2. Builds the change features: AFTER bands + (AFTER - BEFORE) differences, Sentinel-2 and
+ *    Sentinel-1, averaged over 3 x 3 pixels (30 m) to match how the points were labelled.
+ * 3. Trains a Random Forest (0 stable forest, 1 forest loss, 2 non-forest) and compares it,
+ *    on the same held-out points, with a simple NBR-drop threshold.
+ * 4. Maps forest loss inside the start-of-2025 forest, removes patches under 0.5 ha,
+ *    prints the loss area and exports loss_<site>.
+ *
+ * The 70/30 check below is a quick sanity check only. The real accuracy comes later,
+ * from the separate blind validation sample (task P1/P2).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+var SITE = 'omo';
+var SEED = 42;
+var NBR_DROP = -0.10;     // threshold for the simple comparison method
+var EXPORT = false;       // set to true once the map looks right, then run the task
+
+var NAMES = ['stable forest', 'forest loss', 'non-forest'];
+var aoi = sites.aoi(SITE);
+var forest = ee.Image(cfg.ASSET_ROOT + '/forest2025_' + SITE).unmask(0).eq(1);
+
+// ---- Features --------------------------------------------------------------------
+var BANDS = ['B2', 'B3', 'B4', 'B8', 'B11', 'B12', 'NDVI', 'NBR', 'NDMI', 'VV', 'VH', 'VH_VV'];
+var before = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.baseline.label).select(BANDS);
+var after = ee.Image(cfg.ASSET_ROOT + '/comp_' + SITE + '_' + cfg.WINDOWS.recent.label).select(BANDS);
+var stack = after.regexpRename('^(.*)$', 'a_$1')
+  .addBands(after.subtract(before).regexpRename('^(.*)$', 'd_$1'))
+  .focalMean(1, 'square', 'pixels')            // 3 x 3 pixels = the 30 m labelling box
+  .reproject({crs: 'EPSG:32631', scale: 10})
+  .clip(aoi);
+var featureNames = stack.bandNames();
+
+// ---- Labels: merge, majority vote, clean ---------------------------------------
+var ids = (ee.data.listAssets(cfg.ASSET_ROOT).assets || [])
+  .map(function(a) { return a.id || a.name; })
+  .filter(function(id) { return id.indexOf('/labels_train_' + SITE + '_') !== -1; });
+print('Label assets used', ids);
+
+ee.FeatureCollection(ids.map(function(id) { return ee.FeatureCollection(id); })).flatten()
+  .map(function(f) {
+    var xy = f.geometry().coordinates();
+    return f.set('lon', xy.get(0), 'lat', xy.get(1));
+  })
+  .reduceColumns(ee.Reducer.toList(5), ['pid', 'class', 'low_conf', 'lon', 'lat'])
+  .get('list').evaluate(function(rows) {
+    // Votes per point, ignoring skips (-1) and low-confidence labels.
+    var votes = {}, where = {};
+    rows.forEach(function(r) {
+      var pid = r[0], cls = r[1], low = r[2];
+      where[pid] = [r[3], r[4]];
+      if (cls === -1 || low === 1) { return; }
+      votes[pid] = votes[pid] || {};
+      votes[pid][cls] = (votes[pid][cls] || 0) + 1;
+    });
+    var feats = [], dropped = 0;
+    Object.keys(votes).forEach(function(pid) {
+      var v = votes[pid], best = null, bestN = 0, tie = false;
+      Object.keys(v).forEach(function(c) {
+        if (v[c] > bestN) { best = c; bestN = v[c]; tie = false; }
+        else if (v[c] === bestN) { tie = true; }
+      });
+      if (tie) { dropped += 1; return; }
+      feats.push(ee.Feature(ee.Geometry.Point(where[pid]), {pid: pid, class: parseInt(best, 10)}));
+    });
+    var labels = ee.FeatureCollection(feats);
+    print('Training points after cleaning: ' + feats.length + ' (ties dropped: ' + dropped + ')',
+      labels.aggregate_histogram('class'));
+    run(labels);
+  });
+
+function run(labels) {
+  // ---- Train and quick check ------------------------------------------------------
+  var samples = stack.sampleRegions({collection: labels, properties: ['class', 'pid'], scale: 10, tileScale: 4})
+    .randomColumn('r', SEED);
+  var train = samples.filter(ee.Filter.lt('r', 0.7));
+  var test = samples.filter(ee.Filter.gte('r', 0.7));
+
+  var rf = ee.Classifier.smileRandomForest({numberOfTrees: 200, seed: SEED})
+    .train({features: train, classProperty: 'class', inputProperties: featureNames});
+
+  var rfTest = test.classify(rf, 'pred').errorMatrix('class', 'pred', [0, 1, 2]);
+
+  // Simple comparison method: forest pixel with an NBR drop below the threshold = loss.
+  var simple = ee.Image(2).where(forest, 0)
+    .where(forest.and(stack.select('d_NBR').lt(NBR_DROP)), 1).rename('pred');
+  var simpleTest = simple.sampleRegions({collection: test, properties: ['class'], scale: 10, tileScale: 4})
+    .errorMatrix('class', 'pred', [0, 1, 2]);
+
+  print('Quick check on held-out 30% of points (rows = label, columns = prediction; 0 forest, 1 loss, 2 non-forest)');
+  print('Random Forest: overall accuracy', rfTest.accuracy(), 'confusion matrix', rfTest);
+  print('Random Forest: forest-loss F1', rfTest.fscore().get([1]));
+  print('Simple NBR threshold: overall accuracy', simpleTest.accuracy(), 'confusion matrix', simpleTest);
+  print('Simple NBR threshold: forest-loss F1', simpleTest.fscore().get([1]));
+  print('Most useful features', ee.Dictionary(rf.explain().get('importance')));
+
+  // ---- Map ------------------------------------------------------------------------------
+  var classes = stack.classify(rf).rename('class');
+  var loss = classes.eq(1).and(forest);
+  var minPixels = cfg.MIN_PATCH_HA * 10000 / (cfg.SCALE * cfg.SCALE);   // 0.5 ha = 50 pixels
+  loss = loss.updateMask(loss).updateMask(loss.selfMask().connectedPixelCount(256, true).gte(minPixels))
+    .rename('loss').toByte();
+
+  var lossHa = ee.Image.pixelArea().divide(10000).updateMask(loss).reduceRegion({
+    reducer: ee.Reducer.sum(), geometry: sites.boundary(SITE).geometry(), scale: 10, maxPixels: 1e10, tileScale: 4
+  });
+  print('Forest loss between the two dry seasons, inside the reserve (ha, patches >= ' + cfg.MIN_PATCH_HA + ' ha)',
+    lossHa.get('area'));
+
+  Map.centerObject(sites.boundary(SITE), 11);
+  Map.setOptions('SATELLITE');
+  Map.addLayer(after, {bands: ['B11', 'B8', 'B4'], min: [0.05, 0.10, 0.01], max: [0.35, 0.45, 0.15]}, 'AFTER (dry 2025/26)', false);
+  Map.addLayer(classes, {min: 0, max: 2, palette: ['1b7837', 'd7191c', 'bababa']}, 'Classes (green forest, red loss, grey non-forest)', false);
+  Map.addLayer(loss, {palette: ['ff0000']}, 'Forest loss (>= 0.5 ha)');
+  Map.addLayer(ee.Image().paint(sites.boundary(SITE), 0, 2), {palette: ['ffffff']}, 'Reserve boundary');
+  Map.addLayer(labels, {color: 'yellow'}, 'Training points', false);
+
+  if (EXPORT) {
+    Export.image.toAsset({image: loss, description: 'D7_loss_' + SITE, assetId: cfg.ASSET_ROOT + '/loss_' + SITE,
+      region: aoi, scale: 10, maxPixels: 1e10});
+    Export.image.toAsset({image: classes.toByte(), description: 'D7_classes_' + SITE, assetId: cfg.ASSET_ROOT + '/classes_' + SITE,
+      region: aoi, scale: 10, maxPixels: 1e10});
+  }
+}
