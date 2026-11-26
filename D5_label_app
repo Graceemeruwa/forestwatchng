@@ -64,10 +64,36 @@ left.layers().add(markerL); right.layers().add(markerR);
 
 
 // ---- Time-series charts for the current point -------------------------------
-// Every clear Sentinel-2 view and every Sentinel-1 pass over the 30 m box,
-// from Nov 2023 to the end of the last-90-days window.
-var chartPanel = ui.Panel();
+// One dot per clear Sentinel-2 view (NBR) and per Sentinel-1 pass (VH) over the 30 m box,
+// Nov 2023 to the end of the last-90-days window. Values are fetched first, then drawn,
+// and a reply for an old point is ignored, so moving fast between points is safe.
+var chartPanel = ui.Panel({style: {width: '360px'}});
+var chartFor = null;
+
+function seriesValues(col, band, box) {
+  return col.map(function(img) {
+    var v = img.select(band).reduceRegion({reducer: ee.Reducer.mean(), geometry: box, scale: 10}).get(band);
+    return ee.Feature(null, {t: img.date().millis(), v: v});
+  }).filter(ee.Filter.notNull(['v'])).sort('t').reduceColumns(ee.Reducer.toList(2), ['t', 'v']).get('list');
+}
+
+function makeChart(rows, label, title, vmin, vmax, colour) {
+  var table = {
+    cols: [{id: 'd', label: 'Date', type: 'date'}, {id: 'v', label: label, type: 'number'}],
+    rows: rows.map(function(r) { return {c: [{v: new Date(r[0])}, {v: r[1]}]}; })
+  };
+  var chart = ui.Chart(table, 'ScatterChart', {
+    title: title, legend: {position: 'none'}, pointSize: 3, colors: [colour],
+    hAxis: {format: 'MMM yy'}, vAxis: {viewWindow: {min: vmin, max: vmax}},
+    chartArea: {width: '78%', height: '62%'}
+  });
+  chart.style().set({width: '350px', height: '170px'});
+  return chart;
+}
+
 function drawCharts(p) {
+  chartFor = p.pid;
+  chartPanel.widgets().reset([ui.Label('Loading charts...', {fontSize: '11px', color: 'gray'})]);
   var box = ee.Geometry.Point([p.lon, p.lat]).buffer(15).bounds();
   var start = '2023-11-01', end = cfg.LAST90_END;
   var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
@@ -76,27 +102,26 @@ function drawCharts(p) {
     .linkCollection(csPlus, ['cs_cdf'])
     .map(function(img) {
       var clear = img.select('cs_cdf').gte(cfg.CS_THRESHOLD);
-      return ee.Image(img.normalizedDifference(['B8', 'B12']).rename('NBR').updateMask(clear)
-        .copyProperties(img, ['system:time_start']));
+      return img.normalizedDifference(['B8', 'B12']).rename('NBR').updateMask(clear)
+        .set('system:time_start', img.get('system:time_start'));
     });
   var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
     .filterBounds(box).filterDate(start, end)
     .filter(ee.Filter.eq('instrumentMode', 'IW'))
     .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
     .select('VH');
-  var merge = function(a, b) { var o = {}, k; for (k in a) { o[k] = a[k]; } for (k in b) { o[k] = b[k]; } return o; };
-  var opts = {lineWidth: 0, pointSize: 3, legend: {position: 'none'}, height: 170,
-    hAxis: {format: 'MMM yy'}, chartArea: {width: '80%', height: '65%'}};
-  var c1 = ui.Chart.image.series({imageCollection: s2, region: box, reducer: ee.Reducer.mean(), scale: 10})
-    .setOptions(merge(opts, {title: 'Optical NBR (forest ~0.4-0.7; clearing drops sharply)',
-      vAxis: {viewWindow: {min: -0.3, max: 0.8}}, colors: ['#1b7837']}));
-  var c2 = ui.Chart.image.series({imageCollection: s1, region: box, reducer: ee.Reducer.mean(), scale: 10})
-    .setOptions(merge(opts, {title: 'Radar VH dB (forest ~ -12 to -15; clearing falls lower)',
-      vAxis: {viewWindow: {min: -25, max: -8}}, colors: ['#2c7fb8']}));
-  chartPanel.widgets().reset([
-    ui.Label('BEFORE window: Nov 2024-Mar 2025   AFTER window: Nov 2025-Mar 2026', {fontSize: '11px', color: 'gray'}),
-    c1, c2
-  ]);
+  ee.Dictionary({s2: seriesValues(s2, 'NBR', box), s1: seriesValues(s1, 'VH', box)}).evaluate(function(res, err) {
+    if (chartFor !== p.pid) { return; }   // the user has moved on to another point
+    if (err) {
+      chartPanel.widgets().reset([ui.Label('Charts unavailable: ' + err, {color: 'red', fontSize: '11px'})]);
+      return;
+    }
+    chartPanel.widgets().reset([
+      ui.Label('BEFORE window: Nov 2024-Mar 2025. AFTER window: Nov 2025-Mar 2026.', {fontSize: '11px', color: 'gray'}),
+      makeChart(res.s2, 'NBR', 'Optical NBR (forest ~0.4-0.7; clearing drops sharply)', -0.3, 0.8, '#1b7837'),
+      makeChart(res.s1, 'VH dB', 'Radar VH dB (forest ~ -12 to -15; clearing falls lower)', -25, -8, '#2c7fb8')
+    ]);
+  });
 }
 
 // Side panel.
