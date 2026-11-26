@@ -126,6 +126,7 @@ function run(labels) {
   Map.setOptions('SATELLITE');
   Map.addLayer(after, {bands: ['B11', 'B8', 'B4'], min: [0.05, 0.10, 0.01], max: [0.35, 0.45, 0.15]}, 'AFTER (dry 2025/26)', false);
   Map.addLayer(raw.classify(rf), {min: 0, max: 2, palette: ['1b7837', 'd7191c', 'bababa']}, 'Classes (green forest, red loss, grey non-forest)', false);
+  Map.addLayer(hansen25.selfMask(), {palette: ['ffff00']}, 'Hansen 2025 loss (yellow, for comparison)', false);
   Map.addLayer(lossView, {palette: ['ff0000']}, 'Forest loss (quick view, no size filter)');
   Map.addLayer(ee.Image().paint(sites.boundary(SITE), 0, 2), {palette: ['ffffff']}, 'Reserve boundary');
   Map.addLayer(labels, {color: 'yellow'}, 'Training points', false);
