@@ -1,0 +1,40 @@
+/**** S3b - Compare WDPA and team-digitized boundaries (owner: Abiodun) ****
+ * Needs: the digitized boundaries uploaded as assets named
+ *   boundary_omo_digitized, boundary_gambari_digitized (and boundary_obahill_digitized if used)
+ * Prints for each site: WDPA area, digitized area, overlap (intersection over union),
+ * and how far the digitized outline reaches beyond the current 5 km processing buffer.
+ * Map: WDPA outline yellow, digitized outline red, current processing area white.
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+var HA = 10000;
+
+['omo', 'gambari'].forEach(function(key) {
+  var wdpa = sites.boundary(key).geometry();
+  var dig = ee.FeatureCollection(cfg.ASSET_ROOT + '/boundary_' + key + '_digitized').geometry();
+  var aoi = sites.aoi(key);
+
+  var inter = wdpa.intersection(dig, 10).area(10);
+  var union = wdpa.union(dig, 10).area(10);
+  var outside = dig.difference(aoi, 10).area(10);
+
+  print(key, ee.Dictionary({
+    wdpa_ha: wdpa.area(10).divide(HA).round(),
+    digitized_ha: dig.area(10).divide(HA).round(),
+    overlap_IoU: inter.divide(union).multiply(100).round().divide(100),
+    digitized_outside_current_area_ha: outside.divide(HA).round()
+  }));
+
+  Map.addLayer(ee.Image().paint(ee.FeatureCollection(aoi), 0, 1), {palette: ['ffffff']}, key + ': current processing area', false);
+  Map.addLayer(ee.Image().paint(ee.FeatureCollection(wdpa), 0, 2), {palette: ['ffff00']}, key + ': WDPA');
+  Map.addLayer(ee.Image().paint(ee.FeatureCollection(dig), 0, 2), {palette: ['ff0000']}, key + ': digitized');
+});
+
+// Oba Hill: shown only if its asset exists (not part of the current plan).
+var oba = ee.FeatureCollection(cfg.ASSET_ROOT + '/boundary_obahill_digitized');
+print('obahill digitized area (ha), if uploaded', oba.geometry().area(10).divide(HA).round());
+Map.addLayer(ee.Image().paint(oba, 0, 2), {palette: ['ff00ff']}, 'obahill: digitized', false);
+
+Map.setOptions('SATELLITE');
+Map.setCenter(4.1, 7.0, 9);
