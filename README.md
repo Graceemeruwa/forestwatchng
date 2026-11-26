@@ -20,8 +20,10 @@ This repository mirrors the Earth Engine Code Editor repository
 | D2/D3 | `D2_D3_composites` | Member 2 | `comp_<site>_<window>` |
 | D5a | `D5_candidate_points` | Abiodun | `cand_<site>` (+ CSV/KML in Drive) |
 | D5b | `D5_label_app_v2` | All labellers | `labels_train_<site>_<name>_<start>_<end>` |
-| D5c | `D5_calibration_check` | Abiodun | prints agreement |
+| D5c | `D5c_calibration_check` | Abiodun | prints agreement |
 | D4/D6/D7 | `D6_change_model` | Member 2 / Abiodun | `loss_<site>`, `classes_<site>` |
+| R1 | `R1_risk_inputs` | Abiodun | `risk_train_<site>`, `risk_feat_<site>_2024` |
+| R2 | `R2_risk_model` | Abiodun | `risk_<site>_2024` (+ GeoTIFF in Drive) |
 
 Run each script for `SITE = 'omo'` first, then `'gambari'`. Start the export tasks
 from the Tasks tab.

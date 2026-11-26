@@ -1,0 +1,144 @@
+/**** R1 - Risk model inputs and training samples (owner: Abiodun) ****
+ * Question the risk model answers: "Which standing forest is most likely to be cleared next?"
+ *
+ * Design (no peeking into the future):
+ *   - Inputs are measured as they were at the END of year T (forest, recent loss, edges).
+ *   - The answer is whether that forest pixel was lost in the NEXT 2 years (T+1, T+2),
+ *     taken from Hansen Global Forest Change v1.13.
+ *   - T runs from 2017 to 2022, so the answers cover loss from 2018 to 2024.
+ *   - 2025 and 2026 loss are NOT used here. They are kept for the replay test in R2:
+ *     inputs at the end of 2024, then check where 2025-2026 loss actually happened.
+ *
+ * Each sample gets a 'fold' number from a 2 km grid block, so R2 can test the model on
+ * blocks it has never seen (spatial blocking). Nearby pixels are similar, so a random
+ * split would make the model look better than it is.
+ *
+ * Inputs (all at 30 m, the Hansen pixel size):
+ *   d_loss       distance to forest loss in the previous 5 years (m, capped at 5 km)
+ *   loss_dens    share of the surrounding 500 m that was lost in the previous 5 years
+ *   d_edge       distance from the forest pixel to the nearest non-forest (m, capped at 3 km)
+ *   forest_dens  share of the surrounding 500 m that is still forest
+ *   d_road       distance to the nearest road, GRIP4 (m, capped at 10 km)
+ *   d_settle     distance to built-up land, GHSL 2020 (m, capped at 10 km)
+ *   elev, slope  SRTM elevation (m) and slope (degrees)
+ *   inside       1 inside the reserve, 0 in the 5 km buffer
+ *   d_bound      distance to the reserve boundary line (m, capped at 5 km)
+ *
+ * Limits to state in the methods: roads (GRIP4, about 2018) and settlements (GHSL 2020)
+ * are fixed in time, so they do not change with T. Forest is Hansen tree cover in 2000
+ * >= 15% minus later loss; regrowth is not added back.
+ *
+ * Outputs (when EXPORT = true): risk_train_<site> (table), risk_feat_<site>_2024 (image).
+ */
+var cfg = require('users/forestwatchng/forestwatchng:lib/config');
+var sites = require('users/forestwatchng/forestwatchng:lib/sites');
+
+var SITE = 'omo';
+var EXPORT = false;              // set to true once the printed checks look right
+var TRAIN_YEARS = [17, 18, 19, 20, 21, 22];
+var HORIZON = 2;                 // years ahead that the model predicts
+var PREDICT_YEAR = 24;           // inputs at the end of 2024 -> risk for 2025-2026
+var N_LOSS = 300;                // samples per year T: forest that was lost next
+var N_STAY = 900;                //                     forest that stayed
+var BLOCK_M = 2000;              // spatial block size for the folds
+var FOLDS = 5;
+var SEED = 42;
+var CRS = 'EPSG:32631';
+var SCALE = 30;
+
+var aoi = sites.aoi(SITE);
+var reserve = sites.boundary(SITE);
+var gfc = ee.Image('UMD/hansen/global_forest_change_2025_v1_13');
+var lossyear = gfc.select('lossyear').unmask(0);   // 0 = no loss; masked where no loss otherwise
+var treecover = gfc.select('treecover2000');
+
+// ---- Fixed inputs (do not change with T) -------------------------------------------
+function distanceTo(mask, maxM) {
+  // Distance (m) from each pixel to the nearest pixel where mask = 1, capped at maxM.
+  return mask.unmask(0).gt(0).distance(ee.Kernel.euclidean(maxM, 'meters'))
+    .unmask(maxM).min(maxM);
+}
+
+var roads = ee.FeatureCollection('projects/sat-io/open-datasets/GRIP4/Africa')
+  .filterBounds(aoi.buffer(15000));
+var roadMask = ee.Image(0).byte().paint(roads, 1, 2);
+var built = ee.Image('JRC/GHSL/P2023A/GHS_BUILT_S/2020').select('built_surface')
+  .gt(500);                      // > 5% of a 100 m cell is built up
+var dem = ee.Image('USGS/SRTMGL1_003');
+var inside = ee.Image(0).byte().paint(reserve, 1).rename('inside');
+var boundLine = ee.Image(0).byte().paint(reserve, 1, 2);
+
+var fixed = distanceTo(roadMask, 10000).rename('d_road')
+  .addBands(distanceTo(built, 10000).rename('d_settle'))
+  .addBands(dem.rename('elev'))
+  .addBands(ee.Terrain.slope(dem).rename('slope'))
+  .addBands(inside)
+  .addBands(distanceTo(boundLine, 5000).rename('d_bound'));
+
+// ---- Inputs that change with T ------------------------------------------------------
+function forestAt(T) {
+  // Forest at the end of year T: tree cover 2000 >= 15% and not lost in 2001..T.
+  return treecover.gte(cfg.TREE_COVER_MIN).and(lossyear.eq(0).or(lossyear.gt(T)));
+}
+
+function featuresAt(T) {
+  var forest = forestAt(T);
+  var recentLoss = lossyear.gte(T - 4).and(lossyear.lte(T));
+  return distanceTo(recentLoss, 5000).rename('d_loss')
+    .addBands(recentLoss.focalMean(500, 'circle', 'meters').rename('loss_dens'))
+    .addBands(distanceTo(forest.not(), 3000).rename('d_edge'))
+    .addBands(forest.focalMean(500, 'circle', 'meters').rename('forest_dens'))
+    .addBands(fixed)
+    .float();
+}
+
+var FEATURES = ['d_loss', 'loss_dens', 'd_edge', 'forest_dens', 'd_road', 'd_settle',
+                'elev', 'slope', 'inside', 'd_bound'];
+
+// ---- Training samples ---------------------------------------------------------------
+function samplesFor(T) {
+  var lostNext = lossyear.gt(T).and(lossyear.lte(T + HORIZON)).rename('loss');
+  var img = featuresAt(T).addBands(lostNext.toInt()).updateMask(forestAt(T)).clip(aoi);
+  return img.stratifiedSample({
+    numPoints: N_STAY, classBand: 'loss', classValues: [0, 1], classPoints: [N_STAY, N_LOSS],
+    region: aoi, scale: SCALE, projection: CRS, seed: SEED + T, geometries: true, tileScale: 4
+  }).map(function(f) {
+    var xy = f.geometry().transform(CRS, 1).coordinates();
+    var bx = ee.Number(xy.get(0)).divide(BLOCK_M).floor();
+    var by = ee.Number(xy.get(1)).divide(BLOCK_M).floor();
+    return f.set({T: T, block: bx.format('%d').cat('_').cat(by.format('%d')),
+                  fold: bx.multiply(7).add(by.multiply(13)).mod(FOLDS).int()});
+  });
+}
+
+var samples = ee.FeatureCollection(TRAIN_YEARS.map(samplesFor)).flatten();
+
+// ---- Checks -------------------------------------------------------------------------
+print('Samples (loss = 1, stayed forest = 0)', samples.aggregate_histogram('loss'));
+print('Samples per year T', samples.aggregate_histogram('T'));
+print('Samples per fold', samples.aggregate_histogram('fold'));
+print('Roads found in the area (GRIP4)', roads.size());
+print('Mean of each input, lost vs stayed (should differ, e.g. lost = closer to past loss)',
+  ee.Dictionary.fromLists(['lost', 'stayed'], [
+    samples.filter(ee.Filter.eq('loss', 1)).reduceColumns(ee.Reducer.mean().repeat(FEATURES.length), FEATURES).get('mean'),
+    samples.filter(ee.Filter.eq('loss', 0)).reduceColumns(ee.Reducer.mean().repeat(FEATURES.length), FEATURES).get('mean')
+  ]), 'Order:', FEATURES);
+
+// ---- Map ------------------------------------------------------------------------------
+var feat24 = featuresAt(PREDICT_YEAR).updateMask(forestAt(PREDICT_YEAR)).clip(aoi);
+Map.centerObject(aoi, 11);
+Map.addLayer(feat24.select('d_loss'), {min: 0, max: 3000, palette: ['b2182b', 'fddbc7', 'f7f7f7']}, 'Distance to 2020-2024 loss');
+Map.addLayer(feat24.select('d_edge'), {min: 0, max: 1000, palette: ['d6604d', 'f7f7f7']}, 'Distance to forest edge', false);
+Map.addLayer(feat24.select('d_settle'), {min: 0, max: 10000, palette: ['542788', 'f7f7f7']}, 'Distance to settlements', false);
+Map.addLayer(roads.style({color: '333333', width: 1}), {}, 'Roads (GRIP4)');
+Map.addLayer(reserve.style({color: '1a9850', fillColor: '00000000', width: 2}), {}, 'Reserve boundary');
+Map.addLayer(samples.filter(ee.Filter.eq('loss', 1)), {color: 'red'}, 'Samples: lost next', false);
+
+// ---- Export ---------------------------------------------------------------------------
+if (EXPORT) {
+  Export.table.toAsset({collection: samples, description: 'risk_train_' + SITE,
+    assetId: cfg.ASSET_ROOT + '/risk_train_' + SITE});
+  Export.image.toAsset({image: feat24.select(FEATURES), description: 'risk_feat_' + SITE + '_2024',
+    assetId: cfg.ASSET_ROOT + '/risk_feat_' + SITE + '_2024',
+    region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
+}
