@@ -12,9 +12,9 @@
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 
 var SITE = 'omo';
-// Calibration rounds: [first pid, last pid + 1]. Round 1 = 0-49, round 2 = 700-729.
+// Calibration rounds: [first pid, last pid + 1]. Round 1 = 0-49, round 2 = 100-129.
 var ROUND = 2;
-var RANGES = {1: [0, 50], 2: [700, 730]};
+var RANGES = {1: [0, 50], 2: [100, 130]};
 var NAMES = {'0': 'forest', '1': 'loss', '2': 'non-forest', '-1': 'skip'};
 
 // Find all label assets for this site.

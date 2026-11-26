@@ -18,6 +18,7 @@ var LABELLER = 'abiodun';            // your first name, lower case, no spaces
 var START = 0;                       // first point (by pid) in this session
 var END = 150;                       // stop before this point
 var MODE = 'train';                  // 'train' now; 'validate' later (hides Hansen layer)
+var LABEL_SET = 'v2';                // final labelling round (30 m box, agreed rules). Do not change.
 var POINTS = cfg.ASSET_ROOT + (MODE === 'train' ? '/cand_' : '/valpts_') + SITE;
 // --------------------------------------------------------------------------------
 
@@ -139,7 +140,7 @@ panel.add(ui.Button({label: 'Save labels (creates a task)', style: {stretch: 'ho
       class: l.cls === 'skip' ? -1 : l.cls, low_conf: l.low ? 1 : 0
     });
   });
-  var name = 'labels_' + MODE + '_' + SITE + '_' + LABELLER + '_' + START + '_' + END;
+  var name = 'labels_' + LABEL_SET + '_' + MODE + '_' + SITE + '_' + LABELLER + '_' + START + '_' + END;
   Export.table.toAsset({collection: ee.FeatureCollection(feats), description: name, assetId: cfg.ASSET_ROOT + '/' + name});
   print('Backup of ' + feats.length + ' labels (pid:class:low)',
     Object.keys(labels).sort().map(function(k) { return k + ':' + labels[k].cls + ':' + (labels[k].low ? 1 : 0); }).join(' '));

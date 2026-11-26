@@ -19,6 +19,9 @@ var SITE = 'omo';
 var SEED = 42;
 var NBR_DROP = -0.10;     // threshold for the simple comparison method
 var EXPORT = false;       // set to true once the map looks right, then run the task
+// Which labels to train on: 'v2' = the final labelling round (default);
+// 'calibration' = the earlier calibration labels (for testing only).
+var LABEL_SET = 'v2';
 
 var NAMES = ['stable forest', 'forest loss', 'non-forest'];
 var aoi = sites.aoi(SITE);
@@ -40,7 +43,10 @@ var featureNames = stack.bandNames();
 // ---- Labels: merge, majority vote, clean ---------------------------------------
 var ids = (ee.data.listAssets(cfg.ASSET_ROOT).assets || [])
   .map(function(a) { return a.id || a.name; })
-  .filter(function(id) { return id.indexOf('/labels_train_' + SITE + '_') !== -1; });
+  .filter(function(id) {
+    var tag = LABEL_SET === 'v2' ? '/labels_v2_train_' : '/labels_train_';
+    return id.indexOf(tag + SITE + '_') !== -1;
+  });
 print('Label assets used', ids);
 
 ee.FeatureCollection(ids.map(function(id) { return ee.FeatureCollection(id); })).flatten()
