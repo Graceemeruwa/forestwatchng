@@ -1,5 +1,5 @@
 /**** D5c - Calibration check: do the labellers agree? (owner: Abiodun) ****
- * Reads every training-label asset for the site, keeps points 0-49 (the calibration set),
+ * Reads every training-label asset for the site, keeps the calibration points of ROUND,
  * and prints:
  *   - labels per class for each labeller
  *   - agreement and Cohen's kappa for each pair of labellers
@@ -12,7 +12,9 @@
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 
 var SITE = 'omo';
-var CAL_END = 50;   // calibration points are pid 0 to CAL_END - 1
+// Calibration rounds: [first pid, last pid + 1]. Round 1 = 0-49, round 2 = 700-729.
+var ROUND = 2;
+var RANGES = {1: [0, 50], 2: [700, 730]};
 var NAMES = {'0': 'forest', '1': 'loss', '2': 'non-forest', '-1': 'skip'};
 
 // Find all label assets for this site.
@@ -23,7 +25,8 @@ var ids = assets.map(function(a) { return a.id || a.name; }).filter(function(id)
 print('Label assets found', ids);
 
 var all = ee.FeatureCollection(ids.map(function(id) { return ee.FeatureCollection(id); })).flatten()
-  .filter(ee.Filter.lt('pid', ee.Number(CAL_END).format('%04d')));
+  .filter(ee.Filter.gte('pid', ee.Number(RANGES[ROUND][0]).format('%04d')))
+  .filter(ee.Filter.lt('pid', ee.Number(RANGES[ROUND][1]).format('%04d')));
 
 all.reduceColumns(ee.Reducer.toList(4), ['pid', 'labeller', 'class', 'low_conf']).get('list').evaluate(function(rows) {
   // byPid[pid][labeller] = {cls, low}; later sessions overwrite earlier ones.
@@ -85,7 +88,7 @@ all.reduceColumns(ee.Reducer.toList(4), ['pid', 'labeller', 'class', 'low_conf']
       if (l.cls !== '-1') { votes[l.cls] = (votes[l.cls] || 0) + 1; }
     });
     var keys = Object.keys(votes);
-    if (keys.length > 1) { disagreements.push('pid ' + p + ' (go to ' + (parseInt(p, 10) + 1) + ') | ' + line.join(' | ')); }
+    if (keys.length > 1) { disagreements.push('pid ' + p + ' (go to ' + (parseInt(p, 10) - RANGES[ROUND][0] + 1) + ') | ' + line.join(' | ')); }
     var best = null, bestN = 0;
     keys.forEach(function(k) { if (votes[k] > bestN) { best = k; bestN = votes[k]; } });
     var tie = keys.filter(function(k) { return votes[k] === bestN; }).length > 1;

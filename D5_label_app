@@ -62,14 +62,55 @@ var markerL = ui.Map.Layer(ee.Geometry.Point([0, 0]), {color: 'yellow'}, 'Point'
 var markerR = ui.Map.Layer(ee.Geometry.Point([0, 0]), {color: 'yellow'}, 'Point');
 left.layers().add(markerL); right.layers().add(markerR);
 
+
+// ---- Time-series charts for the current point -------------------------------
+// Every clear Sentinel-2 view and every Sentinel-1 pass over the 30 m box,
+// from Nov 2023 to the end of the last-90-days window.
+var chartPanel = ui.Panel();
+function drawCharts(p) {
+  var box = ee.Geometry.Point([p.lon, p.lat]).buffer(15).bounds();
+  var start = '2023-11-01', end = cfg.LAST90_END;
+  var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(box).filterDate(start, end)
+    .linkCollection(csPlus, ['cs_cdf'])
+    .map(function(img) {
+      var clear = img.select('cs_cdf').gte(cfg.CS_THRESHOLD);
+      return img.normalizedDifference(['B8', 'B12']).rename('NBR').updateMask(clear)
+        .copyProperties(img, ['system:time_start']);
+    });
+  var s1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+    .filterBounds(box).filterDate(start, end)
+    .filter(ee.Filter.eq('instrumentMode', 'IW'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+    .select('VH');
+  var merge = function(a, b) { var o = {}, k; for (k in a) { o[k] = a[k]; } for (k in b) { o[k] = b[k]; } return o; };
+  var opts = {lineWidth: 0, pointSize: 3, legend: {position: 'none'}, height: 170,
+    hAxis: {format: 'MMM yy'}, chartArea: {width: '80%', height: '65%'}};
+  var c1 = ui.Chart.image.series({imageCollection: s2, region: box, reducer: ee.Reducer.mean(), scale: 10})
+    .setOptions(merge(opts, {title: 'Optical NBR (forest ~0.4-0.7; clearing drops sharply)',
+      vAxis: {viewWindow: {min: -0.3, max: 0.8}}, colors: ['#1b7837']}));
+  var c2 = ui.Chart.image.series({imageCollection: s1, region: box, reducer: ee.Reducer.mean(), scale: 10})
+    .setOptions(merge(opts, {title: 'Radar VH dB (forest ~ -12 to -15; clearing falls lower)',
+      vAxis: {viewWindow: {min: -25, max: -8}}, colors: ['#2c7fb8']}));
+  chartPanel.widgets().reset([
+    ui.Label('BEFORE window: Nov 2024-Mar 2025   AFTER window: Nov 2025-Mar 2026', {fontSize: '11px', color: 'gray'}),
+    c1, c2
+  ]);
+}
+
 // Side panel.
-var panel = ui.Panel({style: {width: '300px', padding: '8px'}});
+var panel = ui.Panel({style: {width: '380px', padding: '8px'}});
 panel.add(ui.Label('ForestWatch NG - labelling', {fontWeight: 'bold', fontSize: '16px'}));
 panel.add(ui.Label('Site: ' + SITE + ' | labeller: ' + LABELLER + ' | points ' + START + '-' + (END - 1)));
 var status = ui.Label('Loading points...');
 var current = ui.Label('', {fontWeight: 'bold'});
 var counts = ui.Label('');
 var lowConf = ui.Checkbox('Low confidence', false);
+panel.add(ui.Label('Q1: Was the box mostly forest BEFORE?  No -> 2 Non-forest.\n' +
+  'Q2: Is it still mostly forest AFTER?  Yes -> 0 Stable forest.  No -> 1 Forest loss.\n' +
+  'Use the charts: a sudden lasting drop = clearing; a steady line = no change.',
+  {whiteSpace: 'pre', fontSize: '12px', color: '#444444'}));
 panel.add(status).add(current);
 
 var points = [];      // client-side list of {pid, lon, lat}
@@ -87,18 +128,20 @@ function show(k) {
   i = Math.max(0, Math.min(k, points.length - 1));
   var p = points[i];
   var pt = ee.Geometry.Point([p.lon, p.lat]);
-  // ~10 m square around the point, plus four ticks 10-35 m out so it stays easy to find.
+  // 30 m box (3 x 3 Sentinel-2 pixels) around the point, plus ticks 20-45 m out.
+  // Label what covers MOST of this box.
   var dx = 1 / (111320 * Math.cos(p.lat * Math.PI / 180)), dy = 1 / 110540;
   var x = p.lon, y = p.lat;
   var lines = [
-    [[x - 5 * dx, y - 5 * dy], [x + 5 * dx, y - 5 * dy], [x + 5 * dx, y + 5 * dy], [x - 5 * dx, y + 5 * dy], [x - 5 * dx, y - 5 * dy]],
-    [[x - 35 * dx, y], [x - 10 * dx, y]], [[x + 10 * dx, y], [x + 35 * dx, y]],
-    [[x, y - 35 * dy], [x, y - 10 * dy]], [[x, y + 10 * dy], [x, y + 35 * dy]]
+    [[x - 15 * dx, y - 15 * dy], [x + 15 * dx, y - 15 * dy], [x + 15 * dx, y + 15 * dy], [x - 15 * dx, y + 15 * dy], [x - 15 * dx, y - 15 * dy]],
+    [[x - 45 * dx, y], [x - 20 * dx, y]], [[x + 20 * dx, y], [x + 45 * dx, y]],
+    [[x, y - 45 * dy], [x, y - 20 * dy]], [[x, y + 20 * dy], [x, y + 45 * dy]]
   ];
   var marker = ee.Geometry.MultiLineString(lines);
   markerL.setEeObject(marker);
   markerR.setEeObject(marker);
   left.setCenter(p.lon, p.lat, ZOOM);
+  drawCharts(p);
   var done = labels[p.pid];
   status.setValue('Point ' + (i + 1) + ' of ' + points.length + '  (pid ' + p.pid + ')');
   current.setValue(done ? 'Current label: ' + (done.cls === 'skip' ? 'skipped' : CLASSES[done.cls].name) + (done.low ? ' (low confidence)' : '') : 'Not labelled yet');
@@ -129,6 +172,7 @@ var jump = ui.Textbox({placeholder: 'Go to point number'});
 jump.onChange(function(v) { show(parseInt(v, 10) - 1); });
 panel.add(jump);
 panel.add(counts);
+panel.add(chartPanel);
 
 panel.add(ui.Button({label: 'Save labels (creates a task)', style: {stretch: 'horizontal', fontWeight: 'bold'}, onClick: function() {
   var feats = points.filter(function(p) { return labels[p.pid] !== undefined; }).map(function(p) {
