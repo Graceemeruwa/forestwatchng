@@ -1,4 +1,4 @@
-/**** D5b - Labelling app (owners: Abiodun, Member 3) ****
+/**** D5b - Labelling app (v2: 30 m box) (owners: Abiodun, Member 3) ****
  * Compare BEFORE (dry 2024/25, left map) and AFTER (dry 2025/26, right map) Sentinel-2 images,
  * with high-resolution Google satellite imagery underneath, and label each point:
  *   0 = stable forest, 1 = forest loss, 2 = non-forest. Skip if you cannot tell.
@@ -36,7 +36,7 @@ var loss2025 = ee.Image('UMD/hansen/global_forest_change_2025_v1_13').select('lo
 // Per-band stretch so forest shows as dark green and clearings as pink/brown.
 var falseColour = {bands: ['B11', 'B8', 'B4'], min: [0.05, 0.10, 0.01], max: [0.35, 0.45, 0.15]};
 var trueColour = {bands: ['B4', 'B3', 'B2'], min: [0.01, 0.02, 0.01], max: [0.12, 0.12, 0.10], gamma: 1.2};
-var ZOOM = 16;   // about 2.4 m per screen pixel: the 10 m pixel and its surroundings
+var ZOOM = 16;   // about 2.4 m per screen pixel: the 30 m box and its surroundings
 
 // Two linked maps side by side: left = BEFORE, right = AFTER.
 var left = ui.Map(), right = ui.Map();
