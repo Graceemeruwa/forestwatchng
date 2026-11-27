@@ -24,6 +24,7 @@
  *   inside       1 inside the reserve, 0 in the 5 km buffer
  *   d_bound      distance to the reserve boundary line (m, capped at 5 km)
  *
+ * Distances to roads and settlements are computed on a 50 m grid (Earth Engine limit).
  * Limits to state in the methods: roads (GRIP4, about 2018) and settlements (GHSL 2020)
  * are fixed in time, so they do not change with T. Forest is Hansen tree cover in 2000
  * >= 15% minus later loss; regrowth is not added back.
@@ -55,8 +56,11 @@ var treecover = gfc.select('treecover2000');
 // ---- Fixed inputs (do not change with T) -------------------------------------------
 function distanceTo(mask, maxM) {
   // Distance (m) from each pixel to the nearest pixel where mask = 1, capped at maxM.
-  return mask.unmask(0).gt(0).distance(ee.Kernel.euclidean(maxM, 'meters'))
+  // Earth Engine allows a search window of at most 512 pixels across, so long distances
+  // (roads, settlements: 10 km) are worked out on a 50 m grid; the rest stay at 30 m.
+  var d = mask.unmask(0).gt(0).distance(ee.Kernel.euclidean(maxM, 'meters'))
     .unmask(maxM).min(maxM);
+  return maxM > 7000 ? d.reproject({crs: CRS, scale: 50}) : d;
 }
 
 var roads = ee.FeatureCollection('projects/sat-io/open-datasets/GRIP4/Africa')
