@@ -3,12 +3,12 @@
  *
  * Runs in 3 steps so the browser does not freeze. Set STEP, click Run, wait, then go on.
  *
- * STEP 1 - Tests (prints only, no map, about 1-2 minutes)
+ * STEP 1 - Tests (prints only, no map). Run one at a time with TEST = 'a' ... 'e'.
  *   a. Spatial-block test: train on 4 of the 5 folds (2 km blocks), predict the 5th, repeat.
  *      Score = AUC (0.5 = coin flip, 1 = perfect ranking).
  *   b. The simple rule "closest to recent loss" scored on the same samples.
  *   c. Time test: train on T = 2017-2020, test on T = 2021-2022.
- *   d. Site test, if APPLY_SITE differs from TRAIN_SITE (needs R1 run for that site).
+ *   d. Site test: set APPLY_SITE = 'gambari' (needs R1 run for Gambari).
  *   e. Which inputs the model uses most.
  *
  * STEP 2 - Export the risk score (starts one task; run it from the Tasks tab)
@@ -27,6 +27,7 @@ var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 var sites = require('users/forestwatchng/forestwatchng:lib/sites');
 
 var STEP = 1;                    // 1 = tests, 2 = export risk score, 3 = replay + map
+var TEST = 'a';                  // STEP 1 only: run one test at a time: 'a', 'b', 'c', 'd' (Gambari), 'e'
 var TRAIN_SITE = 'omo';
 var APPLY_SITE = 'omo';          // 'gambari' = independent test on a site the model never saw
 var EXPORT = false;              // STEP 3 only: export the final risk layer
@@ -48,53 +49,56 @@ var aoi = sites.aoi(APPLY_SITE);
 var feat = ee.Image(cfg.ASSET_ROOT + '/risk_feat_' + APPLY_SITE + '_2024');
 var scoreId = cfg.ASSET_ROOT + '/risk_score_' + APPLY_SITE + '_2024';
 
-// AUC from [score, label] pairs (rank method; ties share the average rank).
-function auc(rows) {
-  rows.sort(function(a, b) { return a[0] - b[0]; });
-  var rankSumPos = 0, nPos = 0, nNeg = 0, i = 0;
-  while (i < rows.length) {
-    var j = i;
-    while (j + 1 < rows.length && rows[j + 1][0] === rows[i][0]) { j++; }
-    var avgRank = (i + j) / 2 + 1;
-    for (var k = i; k <= j; k++) {
-      if (rows[k][1] === 1) { rankSumPos += avgRank; nPos++; } else { nNeg++; }
-    }
-    i = j + 1;
-  }
-  if (nPos === 0 || nNeg === 0) { return null; }
-  return (rankSumPos - nPos * (nPos + 1) / 2) / (nPos * nNeg);
-}
-
+// AUC worked out on the server from two small histograms (lost vs stayed, 200 bins of the
+// score from 0 to 1), so only a few hundred numbers come back to the browser.
 function printAuc(title, scored) {
-  scored.reduceColumns(ee.Reducer.toList(2), ['p', 'loss']).get('list').evaluate(function(rows, err) {
-    if (err) { print(title + ': error', err); return; }
-    var a = auc(rows);
-    print(title + ': AUC = ' + (a === null ? 'n/a' : a.toFixed(3)) + ' (' + rows.length + ' samples)');
-  });
+  scored.reduceColumns(ee.Reducer.fixedHistogram(0, 1.000001, 200).group(1, 'loss'), ['p', 'loss'])
+    .evaluate(function(r, err) {
+      if (err) { print(title + ': error', err); return; }
+      var h = {};
+      r.groups.forEach(function(g) { h[g.loss] = g.histogram.map(function(b) { return b[1]; }); });
+      if (!h[0] || !h[1]) { print(title + ': n/a'); return; }
+      var nNeg = 0, nPos = 0, sum = 0;
+      h[0].forEach(function(c) { nNeg += c; });
+      h[1].forEach(function(c) { nPos += c; });
+      var negBelow = 0;
+      for (var i = 0; i < h[0].length; i++) {
+        sum += h[1][i] * (negBelow + h[0][i] / 2);
+        negBelow += h[0][i];
+      }
+      print(title + ': AUC = ' + (sum / (nPos * nNeg)).toFixed(3) + ' (' + (nPos + nNeg) + ' samples)');
+    });
 }
 
 // ===== STEP 1: tests ===================================================================
 if (STEP === 1) {
-  var cv = ee.FeatureCollection(ee.List.sequence(0, FOLDS - 1).map(function(k) {
-    k = ee.Number(k).int();
-    var m = newRF().train(train.filter(ee.Filter.neq('fold', k)), 'loss', FEATURES);
-    return train.filter(ee.Filter.eq('fold', k)).classify(m, 'p');
-  })).flatten();
-  printAuc('a. Spatial-block test (unseen 2 km blocks)', cv);
-
-  printAuc('b. Simple rule (closest to recent loss), same samples',
-    train.map(function(f) { return f.set('p', ee.Number(f.get('d_loss')).multiply(-1)); }));
-
-  var early = newRF().train(train.filter(ee.Filter.lte('T', 20)), 'loss', FEATURES);
-  printAuc('c. Time test (train 2017-2020, test 2021-2022)',
-    train.filter(ee.Filter.gte('T', 21)).classify(early, 'p'));
-
-  var model1 = newRF().train(train, 'loss', FEATURES);
-  if (APPLY_SITE !== TRAIN_SITE) {
-    printAuc('d. Site test (trained on ' + TRAIN_SITE + ', tested on ' + APPLY_SITE + ')',
-      ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + APPLY_SITE).classify(model1, 'p'));
+  if (TEST === 'a') {
+    var cv = ee.FeatureCollection(ee.List.sequence(0, FOLDS - 1).map(function(k) {
+      k = ee.Number(k).int();
+      var m = newRF().train(train.filter(ee.Filter.neq('fold', k)), 'loss', FEATURES);
+      return train.filter(ee.Filter.eq('fold', k)).classify(m, 'p');
+    })).flatten();
+    printAuc('a. Spatial-block test (unseen 2 km blocks)', cv);
   }
-  print('e. Input importance (higher = used more)', ee.Dictionary(model1.explain().get('importance')));
+  if (TEST === 'b') {
+    // Rule score: 1 at recent loss, 0 at 5 km or more.
+    printAuc('b. Simple rule (closest to recent loss), same samples',
+      train.map(function(f) { return f.set('p', ee.Number(1).subtract(ee.Number(f.get('d_loss')).divide(5000))); }));
+  }
+  if (TEST === 'c') {
+    var early = newRF().train(train.filter(ee.Filter.lte('T', 20)), 'loss', FEATURES);
+    printAuc('c. Time test (train 2017-2020, test 2021-2022)',
+      train.filter(ee.Filter.gte('T', 21)).classify(early, 'p'));
+  }
+  if (TEST === 'd') {
+    var m1 = newRF().train(train, 'loss', FEATURES);
+    printAuc('d. Site test (trained on ' + TRAIN_SITE + ', tested on ' + APPLY_SITE + ')',
+      ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + APPLY_SITE).classify(m1, 'p'));
+  }
+  if (TEST === 'e') {
+    var m2 = newRF().train(train, 'loss', FEATURES);
+    print('e. Input importance (higher = used more)', ee.Dictionary(m2.explain().get('importance')));
+  }
 }
 
 // ===== STEP 2: export the risk score ===================================================
