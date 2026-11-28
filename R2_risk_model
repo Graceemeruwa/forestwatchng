@@ -10,6 +10,7 @@
  *   c. Time test: train on T = 2017-2020, test on T = 2021-2022.
  *   d. Site test: set APPLY_SITE = 'gambari' (needs R1 run for Gambari).
  *   e. Which inputs the model uses most.
+ *   f. Test a again with only the inputs that change over time (memorisation check).
  *
  * STEP 2 - Export the risk score (starts one task; run it from the Tasks tab)
  *   Risk score from inputs at the end of 2024 (no 2025 data used) -> risk_score_<site>_2024.
@@ -27,7 +28,7 @@ var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 var sites = require('users/forestwatchng/forestwatchng:lib/sites');
 
 var STEP = 1;                    // 1 = tests, 2 = export risk score, 3 = replay + map
-var TEST = 'a';                  // STEP 1 only: run one test at a time: 'a', 'b', 'c', 'd' (Gambari), 'e'
+var TEST = 'a';                  // STEP 1 only: run one test at a time: 'a', 'b', 'c', 'd' (Gambari), 'e', 'f'
 var TRAIN_SITE = 'omo';
 var APPLY_SITE = 'omo';          // 'gambari' = independent test on a site the model never saw
 var EXPORT = false;              // STEP 3 only: export the final risk layer
@@ -94,6 +95,18 @@ if (STEP === 1) {
     var m1 = newRF().train(train, 'loss', FEATURES);
     printAuc('d. Site test (trained on ' + TRAIN_SITE + ', tested on ' + APPLY_SITE + ')',
       ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + APPLY_SITE).classify(m1, 'p'));
+  }
+  if (TEST === 'f') {
+    // Same as test a, but only the inputs that change over time (no terrain, roads,
+    // settlements or boundary). If the AUC stays close to test a, the model is not just
+    // memorising places; if it drops a lot, the fixed inputs carry real information.
+    var DYN = ['d_loss', 'loss_dens', 'd_edge', 'forest_dens'];
+    var cvf = ee.FeatureCollection(ee.List.sequence(0, FOLDS - 1).map(function(k) {
+      k = ee.Number(k).int();
+      var m = newRF().train(train.filter(ee.Filter.neq('fold', k)), 'loss', DYN);
+      return train.filter(ee.Filter.eq('fold', k)).classify(m, 'p');
+    })).flatten();
+    printAuc('f. Spatial-block test, changing inputs only', cvf);
   }
   if (TEST === 'e') {
     var m2 = newRF().train(train, 'loss', FEATURES);
