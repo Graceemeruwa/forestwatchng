@@ -1,27 +1,37 @@
 /**** R2 - Risk model: train, test honestly, replay 2025 (owner: Abiodun) ****
  * Needs R1 exports: risk_train_<site>, risk_feat_<site>_2024.
  *
- * 1. Spatial-block test: train on 4 of the 5 folds (2 km blocks), predict the 5th, repeat.
- *    Score = AUC (0.5 = coin flip, 1 = perfect ranking).
- * 2. Time test: train on T = 2017-2020, test on T = 2021-2022 (the model never saw those years).
- * 3. Site test (APPLY_SITE = 'gambari'): train on Omo only, test on Gambari's samples.
- * 4. Replay: risk map from inputs at the end of 2024 (no 2025 data used), then measure how
- *    much of the forest actually lost in 2025 (Hansen) fell inside the top 10% and 20%
- *    riskiest forest. Compared with a simple rule: "the forest closest to recent loss".
- *    If the model does not beat the simple rule, we say so and use the rule.
+ * Runs in 3 steps so the browser does not freeze. Set STEP, click Run, wait, then go on.
+ *
+ * STEP 1 - Tests (prints only, no map, about 1-2 minutes)
+ *   a. Spatial-block test: train on 4 of the 5 folds (2 km blocks), predict the 5th, repeat.
+ *      Score = AUC (0.5 = coin flip, 1 = perfect ranking).
+ *   b. The simple rule "closest to recent loss" scored on the same samples.
+ *   c. Time test: train on T = 2017-2020, test on T = 2021-2022.
+ *   d. Site test, if APPLY_SITE differs from TRAIN_SITE (needs R1 run for that site).
+ *   e. Which inputs the model uses most.
+ *
+ * STEP 2 - Export the risk score (starts one task; run it from the Tasks tab)
+ *   Risk score from inputs at the end of 2024 (no 2025 data used) -> risk_score_<site>_2024.
+ *
+ * STEP 3 - Replay and map (needs the STEP 2 asset)
+ *   How much of the forest actually lost in 2025 (Hansen) fell inside the top 10% and 20%
+ *   riskiest forest, compared with the simple rule. Then the map, and exports for the app
+ *   and for ArcGIS Pro / QGIS. If the model does not beat the simple rule, we say so.
  *
  * The model is trained on balanced samples (1 lost : 3 stayed), so its output is a
- * relative score for ranking, not a true probability. The map shows percentiles.
- *
+ * relative score for ranking, not a true probability. The map shows the top 10% / 20%.
  * Lead time (how many weeks before a GFW alert we flagged an area) is checked in P4.
  */
 var cfg = require('users/forestwatchng/forestwatchng:lib/config');
 var sites = require('users/forestwatchng/forestwatchng:lib/sites');
 
+var STEP = 1;                    // 1 = tests, 2 = export risk score, 3 = replay + map
 var TRAIN_SITE = 'omo';
 var APPLY_SITE = 'omo';          // 'gambari' = independent test on a site the model never saw
-var EXPORT = false;
+var EXPORT = false;              // STEP 3 only: export the final risk layer
 var SEED = 42;
+var TREES = 150;
 var FOLDS = 5;
 var CRS = 'EPSG:32631';
 var SCALE = 30;
@@ -29,13 +39,14 @@ var FEATURES = ['d_loss', 'loss_dens', 'd_edge', 'forest_dens', 'd_road', 'd_set
                 'elev', 'slope', 'inside', 'd_bound'];
 
 function newRF() {
-  return ee.Classifier.smileRandomForest({numberOfTrees: 300, minLeafPopulation: 5, seed: SEED})
+  return ee.Classifier.smileRandomForest({numberOfTrees: TREES, minLeafPopulation: 5, seed: SEED})
     .setOutputMode('PROBABILITY');
 }
 
 var train = ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + TRAIN_SITE);
 var aoi = sites.aoi(APPLY_SITE);
 var feat = ee.Image(cfg.ASSET_ROOT + '/risk_feat_' + APPLY_SITE + '_2024');
+var scoreId = cfg.ASSET_ROOT + '/risk_score_' + APPLY_SITE + '_2024';
 
 // AUC from [score, label] pairs (rank method; ties share the average rank).
 function auc(rows) {
@@ -62,98 +73,96 @@ function printAuc(title, scored) {
   });
 }
 
-// ---- 1. Spatial-block test -----------------------------------------------------------
-var cv = ee.FeatureCollection(ee.List.sequence(0, FOLDS - 1).map(function(k) {
-  k = ee.Number(k).int();
-  var model = newRF().train(train.filter(ee.Filter.neq('fold', k)), 'loss', FEATURES);
-  return train.filter(ee.Filter.eq('fold', k)).classify(model, 'p');
-})).flatten();
-printAuc('1. Spatial-block test (unseen 2 km blocks)', cv);
+// ===== STEP 1: tests ===================================================================
+if (STEP === 1) {
+  var cv = ee.FeatureCollection(ee.List.sequence(0, FOLDS - 1).map(function(k) {
+    k = ee.Number(k).int();
+    var m = newRF().train(train.filter(ee.Filter.neq('fold', k)), 'loss', FEATURES);
+    return train.filter(ee.Filter.eq('fold', k)).classify(m, 'p');
+  })).flatten();
+  printAuc('a. Spatial-block test (unseen 2 km blocks)', cv);
 
-// Simple rule on the same samples: closer to recent loss = higher risk.
-printAuc('   Simple rule (distance to recent loss) on the same samples',
-  train.map(function(f) { return f.set('p', ee.Number(f.get('d_loss')).multiply(-1)); }));
+  printAuc('b. Simple rule (closest to recent loss), same samples',
+    train.map(function(f) { return f.set('p', ee.Number(f.get('d_loss')).multiply(-1)); }));
 
-// ---- 2. Time test --------------------------------------------------------------------
-var early = newRF().train(train.filter(ee.Filter.lte('T', 20)), 'loss', FEATURES);
-printAuc('2. Time test (train 2017-2020, test 2021-2022)',
-  train.filter(ee.Filter.gte('T', 21)).classify(early, 'p'));
+  var early = newRF().train(train.filter(ee.Filter.lte('T', 20)), 'loss', FEATURES);
+  printAuc('c. Time test (train 2017-2020, test 2021-2022)',
+    train.filter(ee.Filter.gte('T', 21)).classify(early, 'p'));
 
-// ---- Final model (all training samples) ----------------------------------------------
-var model = newRF().train(train, 'loss', FEATURES);
-print('Input importance (higher = used more)', ee.Dictionary(model.explain().get('importance')));
-
-// ---- 3. Site test --------------------------------------------------------------------
-if (APPLY_SITE !== TRAIN_SITE) {
-  printAuc('3. Site test (trained on ' + TRAIN_SITE + ', tested on ' + APPLY_SITE + ')',
-    ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + APPLY_SITE).classify(model, 'p'));
+  var model1 = newRF().train(train, 'loss', FEATURES);
+  if (APPLY_SITE !== TRAIN_SITE) {
+    printAuc('d. Site test (trained on ' + TRAIN_SITE + ', tested on ' + APPLY_SITE + ')',
+      ee.FeatureCollection(cfg.ASSET_ROOT + '/risk_train_' + APPLY_SITE).classify(model1, 'p'));
+  }
+  print('e. Input importance (higher = used more)', ee.Dictionary(model1.explain().get('importance')));
 }
 
-// ---- 4. Replay: 2025 loss vs the end-2024 risk map ----------------------------------
-var risk = feat.select(FEATURES).classify(model).rename('risk');   // masked to forest at end of 2024
-var forestMask = feat.select('d_loss').mask().gt(0);
-var nearLoss = feat.select('d_loss').multiply(-1).rename('rule');  // higher = closer
-
-var cuts = risk.addBands(nearLoss).reduceRegion({
-  reducer: ee.Reducer.percentile([80, 90]), geometry: aoi, scale: SCALE, crs: CRS,
-  maxPixels: 1e10, tileScale: 4
-});
-
-var gfc = ee.Image('UMD/hansen/global_forest_change_2025_v1_13');
-var loss25 = gfc.select('lossyear').unmask(0).eq(25).and(forestMask);
-var area = ee.Image.pixelArea().divide(1e4);   // ha
-
-function flagged(img, band, pct) {
-  // Pixels at or above the percentile. Ties can make the flagged share a bit larger.
-  return img.gte(ee.Number(cuts.get(band + '_p' + pct)));
+// ===== STEP 2: export the risk score ===================================================
+if (STEP === 2) {
+  var model2 = newRF().train(train, 'loss', FEATURES);
+  var score = feat.select(FEATURES).classify(model2).rename('risk').float();  // forest at end of 2024 only
+  Export.image.toAsset({image: score, description: 'risk_score_' + APPLY_SITE + '_2024',
+    assetId: scoreId, region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
+  print('Task created: open the Tasks tab and click Run. Then set STEP = 3.');
 }
-var flags = {
-  model_top20: flagged(risk, 'risk', 80), model_top10: flagged(risk, 'risk', 90),
-  rule_top20: flagged(nearLoss, 'rule', 80), rule_top10: flagged(nearLoss, 'rule', 90)
-};
 
-var stackImg = area.updateMask(forestMask).rename('forest_ha')
-  .addBands(area.updateMask(loss25).rename('loss25_ha'));
-Object.keys(flags).forEach(function(name) {
-  stackImg = stackImg
-    .addBands(area.updateMask(forestMask.and(flags[name])).rename(name + '_forest_ha'))
-    .addBands(area.updateMask(loss25.and(flags[name])).rename(name + '_loss25_ha'));
-});
-var sums = stackImg.unmask(0).reduceRegion({
-  reducer: ee.Reducer.sum(), geometry: aoi, scale: SCALE, crs: CRS, maxPixels: 1e10, tileScale: 4
-});
+// ===== STEP 3: replay 2025 and map =====================================================
+if (STEP === 3) {
+  var risk = ee.Image(scoreId).select('risk');
+  var forestMask = risk.mask().gt(0);
+  var rule = feat.select('d_loss').multiply(-1).updateMask(forestMask).rename('rule');
+  var gfc = ee.Image('UMD/hansen/global_forest_change_2025_v1_13');
+  var loss25 = gfc.select('lossyear').unmask(0).eq(25).and(forestMask);
+  var area = ee.Image.pixelArea().divide(1e4);   // ha
 
-sums.evaluate(function(s, err) {
-  if (err) { print('Replay: error', err); return; }
-  print('4. Replay on ' + APPLY_SITE + ': forest at end of 2024 = ' + s.forest_ha.toFixed(0) +
-        ' ha; lost in 2025 (Hansen) = ' + s.loss25_ha.toFixed(1) + ' ha');
-  var rows = ['model_top10', 'rule_top10', 'model_top20', 'rule_top20'].map(function(n) {
-    return n + ': watches ' + (100 * s[n + '_forest_ha'] / s.forest_ha).toFixed(1) +
-           '% of the forest and captured ' + (100 * s[n + '_loss25_ha'] / s.loss25_ha).toFixed(1) +
-           '% of 2025 loss';
+  // First get the top-10% and top-20% cut-off values as plain numbers,
+  // so the map and the sums do not recompute them for every tile.
+  risk.addBands(rule).reduceRegion({
+    reducer: ee.Reducer.percentile([80, 90]), geometry: aoi, scale: SCALE, crs: CRS,
+    maxPixels: 1e10, tileScale: 4
+  }).evaluate(function(c, err) {
+    if (err) { print('Cut-offs: error', err); return; }
+    print('Cut-off values', c);
+
+    var flags = {
+      model_top10: risk.gte(c.risk_p90), rule_top10: rule.gte(c.rule_p90),
+      model_top20: risk.gte(c.risk_p80), rule_top20: rule.gte(c.rule_p80)
+    };
+    var img = area.updateMask(forestMask).rename('forest_ha')
+      .addBands(area.updateMask(loss25).rename('loss25_ha'));
+    Object.keys(flags).forEach(function(n) {
+      img = img.addBands(area.updateMask(forestMask.and(flags[n])).rename(n + '_forest_ha'))
+               .addBands(area.updateMask(loss25.and(flags[n])).rename(n + '_loss25_ha'));
+    });
+    img.unmask(0).reduceRegion({
+      reducer: ee.Reducer.sum(), geometry: aoi, scale: SCALE, crs: CRS, maxPixels: 1e10, tileScale: 4
+    }).evaluate(function(s, err2) {
+      if (err2) { print('Replay: error', err2); return; }
+      print('Replay on ' + APPLY_SITE + ': forest at end of 2024 = ' + s.forest_ha.toFixed(0) +
+            ' ha; lost in 2025 (Hansen) = ' + s.loss25_ha.toFixed(1) + ' ha');
+      print(Object.keys(flags).map(function(n) {
+        return n + ': watches ' + (100 * s[n + '_forest_ha'] / s.forest_ha).toFixed(1) +
+               '% of the forest and captured ' + (100 * s[n + '_loss25_ha'] / s.loss25_ha).toFixed(1) +
+               '% of 2025 loss';
+      }).join('\n'));
+    });
+
+    // Map (0 lower, 1 top 20%, 2 top 10%)
+    var riskClass = ee.Image(0).where(flags.model_top20, 1).where(flags.model_top10, 2)
+      .updateMask(forestMask).rename('risk_class').toByte();
+    Map.centerObject(aoi, 11);
+    Map.addLayer(riskClass, {min: 0, max: 2, palette: ['f7f7f7', 'fd8d3c', 'bd0026']}, 'Risk: top 20% / top 10%');
+    Map.addLayer(loss25.selfMask(), {palette: ['0000ff']}, '2025 loss (Hansen) - what actually happened');
+    Map.addLayer(sites.boundary(APPLY_SITE).style({color: '1a9850', fillColor: '00000000', width: 2}), {}, 'Reserve boundary');
+
+    if (EXPORT) {
+      var out = risk.addBands(riskClass.float());
+      Export.image.toAsset({image: out, description: 'risk_' + APPLY_SITE + '_2024',
+        assetId: cfg.ASSET_ROOT + '/risk_' + APPLY_SITE + '_2024',
+        region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
+      Export.image.toDrive({image: out, description: 'risk_' + APPLY_SITE + '_2024_tif',
+        folder: 'forestsight', fileNamePrefix: 'risk_' + APPLY_SITE + '_2024',
+        region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
+    }
   });
-  print(rows.join('\n'));
-});
-
-// ---- Map ------------------------------------------------------------------------------
-var riskPct = ee.Image(0)
-  .where(flagged(risk, 'risk', 80), 1)
-  .where(flagged(risk, 'risk', 90), 2)
-  .updateMask(forestMask).rename('risk_class');   // 0 lower, 1 top 20%, 2 top 10%
-Map.centerObject(aoi, 11);
-Map.addLayer(risk, {min: 0, max: 0.8, palette: ['ffffcc', 'fd8d3c', 'bd0026']}, 'Risk score (end of 2024)', false);
-Map.addLayer(riskPct, {min: 0, max: 2, palette: ['f7f7f7', 'fd8d3c', 'bd0026']}, 'Risk: top 20% / top 10%');
-Map.addLayer(loss25.selfMask(), {palette: ['0000ff']}, '2025 loss (Hansen) - what actually happened');
-Map.addLayer(sites.boundary(APPLY_SITE).style({color: '1a9850', fillColor: '00000000', width: 2}), {}, 'Reserve boundary');
-
-// ---- Export ---------------------------------------------------------------------------
-if (EXPORT) {
-  var out = risk.addBands(riskPct).float();
-  Export.image.toAsset({image: out, description: 'risk_' + APPLY_SITE + '_2024',
-    assetId: cfg.ASSET_ROOT + '/risk_' + APPLY_SITE + '_2024',
-    region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
-  // GeoTIFF for ArcGIS Pro / QGIS maps and the app.
-  Export.image.toDrive({image: out, description: 'risk_' + APPLY_SITE + '_2024_tif',
-    folder: 'forestsight', fileNamePrefix: 'risk_' + APPLY_SITE + '_2024',
-    region: aoi, crs: CRS, scale: SCALE, maxPixels: 1e10});
 }
